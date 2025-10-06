@@ -3,7 +3,7 @@
 """
 
 from typing import Optional, List
-from model import * 
+from src.model import * 
     
 class NovelState(BaseModel):
     # 用户意图
