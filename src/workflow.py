@@ -2,9 +2,9 @@
 定义工作状态，核心部分
 """
 from langgraph.graph import StateGraph, END
-from agent import * 
-from node import *
-from client import *
+from src.agent import * 
+from src.node import *
+from src.client import *
 
 
 # 构建工作流
