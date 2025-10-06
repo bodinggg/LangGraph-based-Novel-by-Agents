@@ -1,0 +1,5 @@
+langchain
+langgraph
+langchain_huggingface
+transformers
+nvitop
