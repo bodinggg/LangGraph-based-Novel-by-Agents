@@ -60,20 +60,22 @@ python app.py
 
 ```plaintext
 my_novel/
-├── app.py               # 应用入口，处理用户输入与启动工作流
-├── workflow.py          # 工作流定义，基于LangGraph构建节点与流转逻辑
-├── agent.py/
-│   ├── OutlineGeneratorAgent  # 大纲生成代理
-│   ├── CharacterAgent         # 角色档案生成代理
-│   ├── WriterAgent            # 章节撰写代理
-│   └── ReflectAgent           # 内容评估代理
-├── node.py              # 工作流节点函数，实现各环节具体逻辑
-├── model.py             # 数据模型定义，基于Pydantic实现结构验证
-├── state.py             # 全局状态管理，存储创作过程中的所有数据
-├── prompt.py            # 各Agent的提示词模板
-├── config.py            # 生成参数配置（长度、温度等）
-└── tool.py              # 工具函数（如JSON提取）
-```
+├──app.py               # 应用入口，处理用户输入与启动工作流
+├──config.yaml          # 配置文件，配置Agent所用模型参数
+└──src
+   ├── workflow.py          # 工作流定义，基于LangGraph构建节点与流转逻辑
+   ├── agent.py/
+   │   ├── OutlineGeneratorAgent  # 大纲生成代理
+   │   ├── CharacterAgent         # 角色档案生成代理
+   │   ├── WriterAgent            # 章节撰写代理
+   │   └── ReflectAgent           # 内容评估代理
+   ├── node.py              # 工作流节点函数，实现各环节具体逻辑
+   ├── model.py             # 数据模型定义，基于Pydantic实现结构验证
+   ├── state.py             # 全局状态管理，存储创作过程中的所有数据
+   ├── prompt.py            # 各Agent的提示词模板
+   ├── config_loader.py            # 生成参数配置（长度、温度等）
+   └── tool.py              # 工具函数（如JSON提取）
+   ```
 
 ## 工作流程介绍
 
