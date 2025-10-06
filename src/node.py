@@ -1,8 +1,8 @@
 import json
 
-from model import *
-from agent import * 
-from tool import extract_json
+from src.model import *
+from src.agent import * 
+from src.tool import extract_json
 from typing import Literal
 
 
