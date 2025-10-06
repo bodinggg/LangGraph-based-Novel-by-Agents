@@ -1,10 +1,10 @@
-from model import *
-from workflow import *
-from client import *
-from node import *
-from show import *
-from state import *
-from tool import *
+from src.model import *
+from src.workflow import *
+from src.client import *
+from src.node import *
+from src.show import *
+from src.state import *
+from src.tool import *
 
 def main():
     model_path = "your-local-model-path"
@@ -27,4 +27,5 @@ def main():
         print(f"[main] 发生错误：{str(e)}")
         
 if __name__ == "__main__":
+
     main()
