@@ -2,7 +2,7 @@ from transformers import pipeline, AutoTokenizer
 
 from src.prompt import *
 from src.state import NovelState
-from src.config import *
+from src.config_loger import *
 from src.model import *
 
 # 大纲代理 - 用于生成统领大纲
