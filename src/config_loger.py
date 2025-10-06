@@ -33,3 +33,12 @@ class ConfigLoader:
             raise ValueError(f"YAML配置文件解析错误: {str(e)}")
 
 config = ConfigLoader()
+
+OutlineConfig = config.outline_config
+    
+CharacterConfig = config.character_config
+
+WriterConfig = config.writer_config
+
+ReflectConfig = config.reflect_config
+
