@@ -42,7 +42,7 @@ pip install -r requirements.txt
 1. 启动应用
 
 ```bash
-python app.py
+python app.py --model-path "your-local-model-path"
 ```
 
 1. 输入创作意图
@@ -51,9 +51,9 @@ python app.py
 请输入你的小说创作意图：例如"科幻"
 ```
 
-1. 系统自动运行
+2. 系统自动运行
    - 依次执行大纲生成、角色创建、章节撰写等流程
-   - 过程日志将实时输出
+   - 过程日志将实时输出，并保存日志文件在`./log`
    - 最终生成完整小说内容
 
 ## 项目结构
@@ -74,6 +74,7 @@ my_novel/
    ├── state.py             # 全局状态管理，存储创作过程中的所有数据
    ├── prompt.py            # 各Agent的提示词模板
    ├── config_loader.py            # 生成参数配置（长度、温度等）
+   ├── log_config.py        # 配置log文件
    └── tool.py              # 工具函数（如JSON提取）
    ```
 
