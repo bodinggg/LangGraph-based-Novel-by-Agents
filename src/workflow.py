@@ -1,23 +1,28 @@
 """
-定义工作状态，核心部分
+定义工作状态, 核心部分
 """
 from langgraph.graph import StateGraph, END
-from src.agent import * 
+from src.agent import OutlineGeneratorAgent, CharacterAgent, WriterAgent, ReflectAgent 
 from src.node import *
-from src.client import *
+from src.client import SharedModelManager
+from src.state import NovelState
+from src.log_config import loggers
 
+logger = loggers['workflow']
 
 # 构建工作流
 def create_workflow(model_path: str) -> StateGraph:
     """创建包含章节写作和质量评审的完整工作流"""
     # 获取共享模型实例和分词器
     shared_pipeline, shared_tokenizer = SharedModelManager.get_instance(model_path)
-    
+    logger.info("成功加载共享模型实例和分词器")
     # 初始化使用共享模型的代理
     outline_agent = OutlineGeneratorAgent(shared_pipeline, shared_tokenizer)    # 大纲
     character_agent = CharacterAgent(shared_pipeline, shared_tokenizer)         # 角色
     writer_agent = WriterAgent(shared_pipeline, shared_tokenizer)               # 写作
     reflect_agent = ReflectAgent(shared_pipeline, shared_tokenizer)             # 反思
+    
+    logger.info("代理初始化完成, 开始构建工作流图...")
     
     # 创建图
     workflow = StateGraph(NovelState)
@@ -131,6 +136,6 @@ def create_workflow(model_path: str) -> StateGraph:
     
     workflow.add_edge("success", END)
     workflow.add_edge("failure", END)
-    print(f"图已经创建完成！")
+    logger.info("工作流图创建完成, 开始编译!")
     # 编译图
     return workflow.compile()
