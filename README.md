@@ -24,7 +24,7 @@
 
 ```bash
 git clone https://github.com/bodinggg/LangGraph-based-Novel-by-Agents.git
-cd novel-creator
+cd LangGraph-based-Novel-by-Agents
 ```
 
 1. 安装依赖包
