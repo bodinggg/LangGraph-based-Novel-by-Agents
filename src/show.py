@@ -1,11 +1,11 @@
 """
-让生成的过程可视化，可以选取哪部分用来可视化
+让生成的过程可视化, 可以选取哪部分用来可视化
 """
 
 def print_save(result):
     # 处理结果
     print("*"*80)
-    print("流程结束，处理结果")
+    print("流程结束, 处理结果")
     if result["result"] == "小说创作流程完成":
         outline = result['final_outline']
         character = result['final_characters']       
@@ -43,7 +43,7 @@ def print_save(result):
         print("\n" + "-" * 80)
         save_option = input("是否要将完整内容保存到文件? (y/n): ")
         if save_option.lower() == 'y':
-            filename = f"{outline.title.replace(' ', '_')}.txt"
+            filename = f"./result/{outline.title.replace(' ', '_')}.txt"
             with open(filename, 'w', encoding='utf-8') as f:
                 f.write(f"小说标题: {outline.title}\n")
                 f.write(f"类型: {outline.genre}\n")
