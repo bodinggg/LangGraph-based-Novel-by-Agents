@@ -2,8 +2,15 @@ from transformers import pipeline, AutoTokenizer
 
 from src.prompt import *
 from src.state import NovelState
-from src.config_loger import *
-from src.model import *
+from src.config_loger import (
+    OutlineConfig,
+    CharacterConfig, 
+    WriterConfig,
+    ReflectConfig
+)
+
+from src.model import ChapterContent
+
 
 # 大纲代理 - 用于生成统领大纲
 class OutlineGeneratorAgent:
@@ -11,6 +18,8 @@ class OutlineGeneratorAgent:
         self.pipeline = model_pipeline
         self.tokenizer = tokenizer
         self.system_prompt = OUTLINE_PROMPT
+        
+        
     def generate_outline(self, state: NovelState) -> str:
         
         user_intent = state.user_intent
@@ -22,7 +31,7 @@ class OutlineGeneratorAgent:
         ]
         
         # 构建user信息
-        user_message = f"用户需求：{user_intent}\n请先思考，然后生成大纲"
+        user_message = f"用户需求：{user_intent}\n请先思考, 然后生成大纲"
         
         if error_message:
             user_message = f"之前的尝试出现错误: {error_message}\n请修正错误并重新生成符合格式的大纲。特别注意要用```json和```正确包裹JSON内容。\n{user_message}"
@@ -54,6 +63,7 @@ class CharacterAgent:
         self.pipeline = model_pipeline
         self.tokenizer = tokenizer
         self.system_prompt = CHARACTER_PROMPT
+        
     
     def generate_characters(self, state: NovelState) -> str:
         # 从大纲中提取角色相关信息
@@ -110,7 +120,7 @@ class WriterAgent:
         self.pipeline = model_pipeline
         self.tokenizer = tokenizer
         self.system_prompt = WRITER_PROMPT
-        
+
     
     def write_chapter(self, state: NovelState) -> str:
         """撰写单章内容"""
@@ -159,14 +169,14 @@ class WriterAgent:
         # 添加修改意见（如果有）
         user_message = f"根据以下信息撰写章节内容:\n{context}\n请生成符合格式的章节JSON:"
         if revision_feedback:
-            user_message = f"修改意见:\n{revision_feedback}\n请根据以上意见修改章节内容，保持核心情节不变但改进写作质量。\n{user_message}"
+            user_message = f"修改意见:\n{revision_feedback}\n请根据以上意见修改章节内容, 保持核心情节不变但改进写作质量。\n{user_message}"
         
         # 构建对话历史
         messages = [
             {"role": "system", "content": self.system_prompt},
             {"role": "user", "content": user_message}
         ]
-        print(f"[write_chapter] |{current_chapter_index}| {user_message}")
+        # print(f"[write_chapter] |{current_chapter_index}| {user_message}")
         # 转换为模型需要的输入格式
         prompt = self.tokenizer.apply_chat_template(
             messages,
@@ -190,18 +200,11 @@ class WriterAgent:
     def write_section(self, state:NovelState) -> str:
         """分节写作"""
         # 章节基本信息
-        error_message = state.current_chapter_validated_error
         outline = state.validated_outline
-        characters = state.validated_characters
         
         current_chapter_index = state.current_chapter_index
         chapters = outline.chapters
         chapter_outline = chapters[current_chapter_index]
-        novel_title = outline.title
-        genre = outline.genre
-        setting = outline.setting
-        
-        quality = state.validated_evaluation
         
         context = self._get_relavant_context(state, current_chapter_index)
         base_info = f"""
@@ -220,13 +223,13 @@ class WriterAgent:
 
         {base_info}
 
-        请撰写这一章的开头部分，包括：
+        请撰写这一章的开头部分, 包括：
         - 场景描述
         - 引入主要人物
         - 设定章节基调
         - 引出本章主要事件的开端
 
-        确保内容生动、细节丰富，字数不少于2000字。
+        确保内容生动、细节丰富, 字数不少于2000字。
         
         直接生成小说内容！
         """
@@ -249,13 +252,13 @@ class WriterAgent:
         本章开头部分内容：
         ...{generated_text[-500:]}  
 
-        请继续撰写本章的中间部分，包括：
+        请继续撰写本章的中间部分, 包括：
         - 发展章节的主要冲突和事件
         - 展示角色互动
         - 推进情节发展
         - 增加情节紧张度或复杂性
 
-        确保内容生动、细节丰富，字数不少于2000字，衔接流畅。
+        确保内容生动、细节丰富, 字数不少于2000字, 衔接流畅。
         
         直接生成小说内容！
         """
@@ -277,13 +280,13 @@ class WriterAgent:
         本章前文内容摘要：
         ...{generated_text[-500:]} 
 
-        请完成本章的结尾部分，包括：
+        请完成本章的结尾部分, 包括：
         - 解决或推进本章的主要冲突
         - 展示角色的反应和情感变化
         - 为下一章埋下伏笔
         - 以合适的钩子结束本章
 
-        确保内容生动、细节丰富，字数不少于2000字，与前文无缝衔接。
+        确保内容生动、细节丰富, 字数不少于2000字, 与前文无缝衔接。
         
         直接生成小说内容！
         """
@@ -325,7 +328,7 @@ class WriterAgent:
             if char.name in state.validated_outline.chapters[chapter_id].characters_involved:
                 # 简化的角色信息减少token
                 char_summary = f"角色：{char.name}\n性格：{char.personality}\n"
-                char_summary += f"目标：{'，'.join(char.goals)}\n"
+                char_summary += f"目标：{', '.join(char.goals)}\n"
                 relevant_chars.append(char_summary)
         relevant_chars = '\n'.join(relevant_chars)
         context = f"""相关角色信息：{relevant_chars}"""
@@ -343,6 +346,7 @@ class ReflectAgent:
         self.pipeline = model_pipeline
         self.tokenizer = tokenizer
         self.system_prompt = REFLECT_PROMPT
+        
     
     def evaluate_chapter(self, state: NovelState) -> str:
         """评估章节质量并提供反馈"""
@@ -393,7 +397,7 @@ class ReflectAgent:
         result = self.pipeline(
             prompt,
             max_new_tokens=ReflectConfig.max_new_tokens,
-            temperature=ReflectConfig.temperature,  # 较低的随机性，确保评估的一致性
+            temperature=ReflectConfig.temperature,  # 较低的随机性, 确保评估的一致性
             top_p=ReflectConfig.top_p,
             do_sample=True,
             pad_token_id=self.tokenizer.eos_token_id
