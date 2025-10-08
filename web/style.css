@@ -1,0 +1,72 @@
+.main-container {
+    background-color: #f5f7fa;
+    padding: 12px;  
+    border-radius: 10px;
+}
+
+.settings-panel {
+    background-color: #ffffff;
+    padding: 5px;  
+    border-radius: 8px;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05);
+}
+
+.panel-title {
+    color: #2c3e50;
+    margin-bottom: 5px !important;  
+    padding-bottom: 5px;  
+    border-bottom: 1px solid #eaecef;
+}
+
+.input-field {
+    margin-bottom: 6px !important;  
+    border: 1px solid #ddd !important;
+    border-radius: 6px !important;
+}
+
+.advanced-settings {
+    background-color: #f9fafb;
+    border-radius: 6px;
+    margin-bottom: 6px !important;  
+}
+
+.status-container, .save-status-container {
+    background-color: #f8f9fa;
+    border: 1px solid #e9ecef;
+    border-radius: 6px;
+    margin-bottom: 10px !important;  
+}
+
+.generate-btn {
+    background-color: #3498db !important;
+    color: white !important;
+    margin-bottom: 12px !important;  /* 减少生成按钮下方间距 */
+    padding: 8px 0 !important;  /* 减少按钮内边距 */
+    font-weight: 500 !important;
+}
+
+.generate-btn:hover {
+    background-color: #2980b9 !important;
+}
+
+.info-card-container {
+    gap: 5px;  
+    margin-top: 5px; 
+}
+
+.save-settings-panel, .save-status-panel {
+    background-color: #f9fafb;
+    padding: 5px;  
+    border-radius: 6px;
+}
+
+.save-btn {
+    background-color: #2ecc71 !important;
+    color: white !important;
+    margin-top: 5px !important;  
+    padding: 6px 0 !important;  
+}
+
+.save-btn:hover {
+    background-color: #27ae60 !important;
+}
