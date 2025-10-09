@@ -7,20 +7,40 @@ from src.node import *
 from src.client import SharedModelManager
 from src.state import NovelState
 from src.log_config import loggers
+from src.model_manager import LocalModelManager, APIModelManager
+from src.config_loader import (
+    OutlineConfig,
+    CharacterConfig,
+    WriterConfig,
+    ReflectConfig,
+    ModelConfig
+)
 
 logger = loggers['workflow']
 
 # 构建工作流
-def create_workflow(model_path: str) -> StateGraph:
+def create_workflow(model_config: ModelConfig) -> StateGraph:
     """创建包含章节写作和质量评审的完整工作流"""
     # 获取共享模型实例和分词器
-    shared_pipeline, shared_tokenizer = SharedModelManager.get_instance(model_path)
-    logger.info("成功加载共享模型实例和分词器")
-    # 初始化使用共享模型的代理
-    outline_agent = OutlineGeneratorAgent(shared_pipeline, shared_tokenizer)    # 大纲
-    character_agent = CharacterAgent(shared_pipeline, shared_tokenizer)         # 角色
-    writer_agent = WriterAgent(shared_pipeline, shared_tokenizer)               # 写作
-    reflect_agent = ReflectAgent(shared_pipeline, shared_tokenizer)             # 反思
+    model_type = model_config.model_type
+    
+    if model_type == "local":
+        model_manager = LocalModelManager(model_config.model_path)
+    elif model_type == "api":
+        model_manager = APIModelManager(
+            model_config.api_url,
+            model_config.api_key,
+            model_name=model_config.model_name,
+            max_retries=model_config.max_retries,
+            retry_delay=model_config.retry_delay
+        )
+    logger.info(f"成功加载{model_type}模型管理器")
+    
+    # 初始化 Agent
+    outline_agent = OutlineGeneratorAgent(model_manager, OutlineConfig)    # 大纲
+    character_agent = CharacterAgent(model_manager, CharacterConfig)         # 角色
+    writer_agent = WriterAgent(model_manager, WriterConfig)               # 写作
+    reflect_agent = ReflectAgent(model_manager, ReflectConfig)             # 反思
     
     logger.info("代理初始化完成, 开始构建工作流图...")
     
