@@ -1,22 +1,16 @@
-from transformers import pipeline, AutoTokenizer
+from typing import Dict, Any
 
 from src.prompt import *
 from src.state import NovelState
-from src.config_loger import (
-    OutlineConfig,
-    CharacterConfig, 
-    WriterConfig,
-    ReflectConfig
-)
-
 from src.model import ChapterContent
+from src.model_manager import ModelManager
 
 
 # 大纲代理 - 用于生成统领大纲
 class OutlineGeneratorAgent:
-    def __init__(self, model_pipeline: pipeline, tokenizer: AutoTokenizer):
-        self.pipeline = model_pipeline
-        self.tokenizer = tokenizer
+    def __init__(self, model_manager: ModelManager, config: Dict[str, Any]):
+        self.model_manager = model_manager
+        self.config = config
         self.system_prompt = OUTLINE_PROMPT
         
         
@@ -25,43 +19,31 @@ class OutlineGeneratorAgent:
         user_intent = state.user_intent
         error_message = state.outline_validated_error
         
-        # 构建对话历史
-        messages = [
-            {"role":"system", "content": self.system_prompt},
-        ]
-        
         # 构建user信息
         user_message = f"用户需求：{user_intent}\n请先思考, 然后生成大纲"
         
         if error_message:
             user_message = f"之前的尝试出现错误: {error_message}\n请修正错误并重新生成符合格式的大纲。特别注意要用```json和```正确包裹JSON内容。\n{user_message}"
+            
+        # chat compelet
+        messages = [
+            {
+                "role":"system",
+                "content":self.system_prompt
+            },
+            {
+                "role":"user",
+                "content":user_message
+            }
+        ]
         
-        messages.append({"role":"user", "content": user_message})
-        
-        # 转换为模型需要的输入格式
-        prompt = self.tokenizer.apply_chat_template(
-            messages,
-            tokenize = False,
-        )
-        
-        result = self.pipeline(
-            prompt,
-            max_new_tokens = OutlineConfig.max_new_tokens,
-            temperature = OutlineConfig.temperature,
-            top_p = OutlineConfig.top_p,
-            do_sample = True,
-        )
-        
-        # 提取生成的回答
-        generated_text = result[0]["generated_text"][len(prompt):].strip()
-        
-        return generated_text
+        return self.model_manager.generate(messages, self.config)
 
 # 角色代理 - 用于生成角色档案
 class CharacterAgent:
-    def __init__(self, model_pipeline: pipeline, tokenizer: AutoTokenizer):
-        self.pipeline = model_pipeline
-        self.tokenizer = tokenizer
+    def __init__(self, model_manager: ModelManager, config: Dict[str, Any]):
+        self.model_manager = model_manager
+        self.config = config
         self.system_prompt = CHARACTER_PROMPT
         
     
@@ -89,36 +71,26 @@ class CharacterAgent:
             context += f"- {name}: {'; '.join(events[:3])}\n"  # 取前3个关键事件
         if error_message:
             context += error_message
-        # 构建对话历史
+        user_message = f"根据以下小说大纲生成详细角色档案:\n{context}\n请生成符合格式的角色档案JSON:"
+        
         messages = [
-            {"role": "system", "content": self.system_prompt},
-            {"role": "user", "content": f"根据以下小说大纲生成详细角色档案:\n{context}\n请生成符合格式的角色档案JSON:"}
+            {
+                "role":"system",
+                "content":self.system_prompt
+            },
+            {
+                "role":"user",
+                "content":user_message
+            }
         ]
         
-        # 转换为模型需要的输入格式
-        prompt = self.tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True
-        )
-        
-        result = self.pipeline(
-            prompt,
-            max_new_tokens=CharacterConfig.max_new_tokens,
-            temperature=CharacterConfig.temperature,
-            top_p=CharacterConfig.top_p,
-            do_sample=True,
-            pad_token_id=self.tokenizer.eos_token_id
-        )
-        
-        generated_text = result[0]['generated_text'][len(prompt):].strip()
-        return generated_text
-
+        return self.model_manager.generate(messages, self.config)
+    
 # 写作代理 - 用于单章撰写
 class WriterAgent:
-    def __init__(self, model_pipeline: pipeline, tokenizer: AutoTokenizer):
-        self.pipeline = model_pipeline
-        self.tokenizer = tokenizer
+    def __init__(self, model_manager: ModelManager, config: Dict[str, Any]):
+        self.model_manager = model_manager
+        self.config = config
         self.system_prompt = WRITER_PROMPT
 
     
@@ -170,32 +142,19 @@ class WriterAgent:
         user_message = f"根据以下信息撰写章节内容:\n{context}\n请生成符合格式的章节JSON:"
         if revision_feedback:
             user_message = f"修改意见:\n{revision_feedback}\n请根据以上意见修改章节内容, 保持核心情节不变但改进写作质量。\n{user_message}"
-        
-        # 构建对话历史
+
         messages = [
-            {"role": "system", "content": self.system_prompt},
-            {"role": "user", "content": user_message}
+            {
+                "role":"system",
+                "content":self.system_prompt
+            },
+            {
+                "role":"user",
+                "content":user_message
+            }
         ]
-        # print(f"[write_chapter] |{current_chapter_index}| {user_message}")
-        # 转换为模型需要的输入格式
-        prompt = self.tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True
-        )
         
-        # 调用模型生成章节内容
-        result = self.pipeline(
-            prompt,
-            max_new_tokens=WriterConfig.max_new_tokens, 
-            temperature=WriterConfig.temperature,  
-            top_p=WriterConfig.top_p,
-            do_sample=True,
-            pad_token_id=self.tokenizer.eos_token_id
-        )
-        
-        generated_text = result[0]['generated_text'][len(prompt):].strip()
-        return generated_text
+        return self.model_manager.generate(messages, self.config)
 
     def write_section(self, state:NovelState) -> str:
         """分节写作"""
@@ -233,17 +192,10 @@ class WriterAgent:
         
         直接生成小说内容！
         """
-        # 构建对话历史
-        messages = [
-            {"role": "system", "content": self.system_prompt},
-            {"role": "user", "content": opening_prompt}
-        ]
-        prompt = self.tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True
-        )
-        generated_text += self._get_content(state, prompt)
+        
+        # 对话模板待添加
+        generated_text += self.model_manager.generate(self.system_prompt+opening_prompt, self.config)
+
         # 2. 中间部分 (约1500-2000字)
         # 提供前文作为上下文
         middle_prompt = f"""
@@ -262,17 +214,9 @@ class WriterAgent:
         
         直接生成小说内容！
         """
-        # 构建对话历史
-        messages = [
-            {"role": "system", "content": self.system_prompt},
-            {"role": "user", "content": middle_prompt}
-        ]
-        prompt = self.tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True
-        )
-        generated_text += self._get_content(state, prompt)
+        
+        # 对话模板待添加
+        generated_text += self.model_manager.generate(self.system_prompt+middle_prompt, self.config)
         # 3. 结尾部分 (约1500字)
         ending_prompt = f"""
         {base_info}
@@ -290,35 +234,14 @@ class WriterAgent:
         
         直接生成小说内容！
         """
-        # 构建对话历史
-        messages = [
-            {"role": "system", "content": self.system_prompt},
-            {"role": "user", "content": ending_prompt}
-        ]
-        prompt = self.tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True
-        )
-        generated_text += self._get_content(state, prompt)
+
+        # 对话模板待添加
+        generated_text += self.model_manager.generate(self.system_prompt+ending_prompt, self.config)
         title = state.validated_outline.chapters[current_chapter_index].title
         temp_ChapterContent = ChapterContent(title=title, content=generated_text)
         
         return str(temp_ChapterContent)
-        
-    # 直接生成内容拼接
-    def _get_content(self, state:NovelState, prompt:str) -> str:
-        result = self.pipeline(
-            prompt,
-            max_new_tokens=WriterConfig.max_new_tokens, 
-            temperature=WriterConfig.temperature,  
-            top_p=WriterConfig.top_p,
-            do_sample=True,
-            pad_token_id=self.tokenizer.eos_token_id
-        )
-        
-        generated_text = result[0]['generated_text'][len(prompt):].strip()
-        return generated_text
+
     
     def _get_relavant_context(self, state:NovelState, chapter_id:int) -> str:
         
@@ -342,9 +265,9 @@ class WriterAgent:
 
 # 反思代理 - 用于评审章节质量
 class ReflectAgent:
-    def __init__(self, model_pipeline: pipeline, tokenizer: AutoTokenizer):
-        self.pipeline = model_pipeline
-        self.tokenizer = tokenizer
+    def __init__(self, model_manager: ModelManager, config: Dict[str, Any]):
+        self.model_manager = model_manager
+        self.config = config
         self.system_prompt = REFLECT_PROMPT
         
     
@@ -356,8 +279,6 @@ class ReflectAgent:
         chapter_content = state.validated_chapter_draft
         chapter_outline = state.validated_outline.chapters[current_chapter_index]
         characters = state.validated_characters
-        
-        min_length = WriterConfig.min_word_length
          
         involved_chars = [char for char in characters 
                          if char.name in chapter_outline.characters_involved]
@@ -370,8 +291,7 @@ class ReflectAgent:
         context += "本章涉及角色及其性格:\n"
         for char in involved_chars:
             context += f"- {char.name}: {char.personality}\n"
-        
-        context += f"\n最小长度要求: {min_length}字符\n"
+
         context += f"实际长度: {len(chapter_content.content)}字符\n\n"
         
         context += "章节内容:\n"
@@ -379,29 +299,18 @@ class ReflectAgent:
         
         if error_message:
             context += error_message
+
+        user_message = f"请评审以下章节内容并提供评估:\n{context}\n请生成符合格式的评估JSON:"
         
-        # 构建对话历史
         messages = [
-            {"role": "system", "content": self.system_prompt},
-            {"role": "user", "content": f"请评审以下章节内容并提供评估:\n{context}\n请生成符合格式的评估JSON:"}
+            {
+                "role":"system",
+                "content":self.system_prompt
+            },
+            {
+                "role":"user",
+                "content":user_message
+            }
         ]
         
-        # 转换为模型需要的输入格式
-        prompt = self.tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True
-        )
-        
-        # 调用模型进行评估
-        result = self.pipeline(
-            prompt,
-            max_new_tokens=ReflectConfig.max_new_tokens,
-            temperature=ReflectConfig.temperature,  # 较低的随机性, 确保评估的一致性
-            top_p=ReflectConfig.top_p,
-            do_sample=True,
-            pad_token_id=self.tokenizer.eos_token_id
-        )
-        
-        generated_text = result[0]['generated_text'][len(prompt):].strip()
-        return generated_text
+        return self.model_manager.generate(messages, self.config)
