@@ -12,11 +12,14 @@
 - **错误反馈**：重试次数达到上限，最后会优雅地告诉你问题出在哪里
 
 ## 略大一些更新の日志
+2025-10-09:  添加API调用方式
 2025-10-08： 利用gradio搭建前端，css配置样式，现在可以在前端直观看到结果以及简化的运行过程了，具体日志还可以通过terminal/log文件去查看。
 使用方法（`port`为端口号，默认7999）：
 ```bash
 python app_gradio.py --port 7999
 ```
+## 示例（您仅仅需要输入意图，模型帮你考虑一切）
+![Gradio前端界面（2025-10-09更新）](assets/chapter_1.png)
 
 ## 安装指南
 
@@ -49,7 +52,10 @@ pip install -r requirements.txt
 1. 启动应用
 
 ```bash
-python app.py --model-path "your-local-model-path"
+python app.py --model-type api or local
+```
+```bash
+python app_gradip.py --port 7999
 ```
 
 1. 输入创作意图
@@ -67,9 +73,15 @@ python app.py --model-path "your-local-model-path"
 
 ```plaintext
 my_novel/
-├──app.py               # 应用入口，处理用户输入与启动工作流
+├── assets/                # 新增：存放README图片
+│   ├── gradio_interface.png  # 示例：Gradio前端界面截图
+│   └── workflow_diagram.png  # 示例：工作流流程图
+├──app_gradio.py         # 前端入口
+├──app.py               # 终端入口，处理用户输入与启动工作流
 ├──config.yaml          # 配置文件，配置Agent所用模型参数
-└──src
+├── web/                
+│   └── style.css     # gradio配置文件
+└──src/
    ├── workflow.py          # 工作流定义，基于LangGraph构建节点与流转逻辑
    ├── agent.py/
    │   ├── OutlineGeneratorAgent  # 大纲生成代理
