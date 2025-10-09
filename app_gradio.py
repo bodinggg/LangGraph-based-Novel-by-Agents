@@ -4,13 +4,12 @@ import argparse
 from datetime import datetime
 from src.workflow import create_workflow
 from src.log_config import loggers
-
 from src.model import NovelOutline
+from src.config_loader import ModelConfig
 
 def get_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--port", type=int, help="端口号",default=8000)
-
+    parser.add_argument("--port", type=int, help="端口号", default=8000)
     return parser.parse_args()
 
 # 初始化日志记录器
@@ -28,6 +27,9 @@ class NovelGeneratorUI:
         self.validated_outline = None  # 已验证的小说大纲
         self.validated_characters = None  # 已验证的角色列表
         self.final_result = None  # 最终生成结果
+        # 从环境变量加载默认API配置
+        self.default_api_key = os.getenv("API_KEY", "")
+        self.default_base_url = os.getenv("BASE_URL", "")
 
     def __update_status(self, message):
         """更新状态信息并记录日志"""
@@ -41,16 +43,16 @@ class NovelGeneratorUI:
         
         outline_str = f"## 📖 小说大纲\n"
         outline_str += f"**标题**: {outline.title}\n\n"
-        outline_str += f"**类型**: {outline.genre}\n"
-        outline_str += f"**主题**: {outline.theme}\n"
+        outline_str += f"**类型**: {outline.genre}\n\n"
+        outline_str += f"**主题**: {outline.theme}\n\n"
         outline_str += f"**背景**: {outline.setting}\n\n"
         outline_str += f"**情节概要**: {outline.plot_summary}\n\n"
         outline_str += "### 📑 章节列表:\n"
         
         for i, chapter in enumerate(outline.chapters, 1):
-            outline_str += f"**第{i}章**: {chapter.title}\n"
-            outline_str += f"  摘要: {chapter.summary}\n"
-            outline_str += f"  关键事件: {', '.join(chapter.key_events)}\n"
+            outline_str += f"**第{i}章**: {chapter.title}\n\n"
+            outline_str += f"  摘要: {chapter.summary}\n\n"
+            outline_str += f"  关键事件: {', '.join(chapter.key_events)}\n\n"
             outline_str += f"  涉及角色: {', '.join(chapter.characters_involved)}\n\n"
             
         return outline_str
@@ -102,7 +104,7 @@ class NovelGeneratorUI:
             return gr.Dropdown(choices=[], interactive=False)
         
         choices = [f"第{i+1}章：{chapters[i].title}" for i in range(len(chapters))]
-        return gr.Dropdown(choices=choices, value=choices[-1], interactive=True)
+        return gr.Dropdown(choices=choices, value=choices[-1] if choices else None, interactive=True)
 
     def _show_selected_chapter(self, selection):
         """显示选中的章节内容"""
@@ -114,8 +116,21 @@ class NovelGeneratorUI:
             return self._format_chapter(self.all_chapters[index], index)
         return "章节内容不存在"
 
-    def _generate_novel(self, user_intent, model_path, status_box, outline_box, 
-                      characters_box, chapter_box, evaluation_box, chapter_selector):
+    def _toggle_model_settings(self, model_type):
+        """根据模型类型切换显示对应的设置项"""
+        if model_type == "api":
+            return (
+                gr.update(visible=True),  # api设置面板
+                gr.update(visible=False)  # 本地模型设置面板
+            )
+        else:
+            return (
+                gr.update(visible=False),  # api设置面板
+                gr.update(visible=True)   # 本地模型设置面板
+            )
+
+    def _generate_novel(self, user_intent, model_type, api_key, base_url, model_name, model_path, 
+                      status_box, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector):
         """生成小说的主流程（生成器函数）"""
         if self.processing:
             return status_box, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector
@@ -130,7 +145,33 @@ class NovelGeneratorUI:
             status = self.__update_status("🔄 初始化工作流...")
             yield status, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector
             
-            self.workflow = create_workflow(model_path)
+            # 根据模型类型创建配置
+            if model_type == "api":
+                if not api_key:
+                    raise ValueError("API密钥不能为空，请输入有效的API_KEY")
+                if not model_name:
+                    raise ValueError("请输入模型名称")
+                
+                model_config = ModelConfig(
+                    model_type="api",
+                    api_key=api_key,
+                    api_url=base_url,
+                    model_name=model_name
+                )
+                status = self.__update_status(f"✅ 已配置API模型: {model_name}")
+            else:
+                if not model_path:
+                    raise ValueError("本地模型路径不能为空，请输入有效的模型路径")
+                
+                model_config = ModelConfig(
+                    model_type="local",
+                    model_path=model_path
+                )
+                status = self.__update_status(f"✅ 已加载本地模型: {os.path.basename(model_path)}")
+            
+            yield status, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector
+            
+            self.workflow = create_workflow(model_config)
             status = self.__update_status("✅ 工作流初始化完成，开始生成小说...")
             yield status, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector
             
@@ -248,8 +289,10 @@ class NovelGeneratorUI:
             return error_msg, self.__update_status(error_msg)
 
     def _load_css(self, filename):
-        with open(filename, "r", encoding="utf-8") as f:
-            return f.read()
+        if os.path.exists(filename):
+            with open(filename, "r", encoding="utf-8") as f:
+                return f.read()
+        return ""
     
     def create_interface(self):
         """创建优雅布局的Gradio界面"""
@@ -294,13 +337,51 @@ class NovelGeneratorUI:
                             lines=3,
                             elem_classes="input-field"
                         )
-                    # 模型设置折叠面板
-                    with gr.Accordion("模型高级设置", open=False, elem_classes="advanced-settings"):
+                    
+                    # 模型类型选择
+                    model_type = gr.Radio(
+                        choices=["api", "local"], 
+                        label="模型类型", 
+                        value="api",
+                        elem_classes="model-type-select"
+                    )
+                    
+                    # API模型设置面板
+                    with gr.Accordion("API模型设置", open=True, visible=True, elem_id="api-settings") as api_settings:
+                        api_key = gr.Textbox(
+                            label="API密钥", 
+                            placeholder="输入你的API密钥",
+                            value=self.default_api_key,
+                            type="password",
+                            lines=1
+                        )
+                        base_url = gr.Textbox(
+                            label="API基础地址", 
+                            placeholder="例如：https://api.openai.com/v1",
+                            value=self.default_base_url,
+                            lines=1
+                        )
+                        model_name = gr.Textbox(
+                            label="模型名称", 
+                            placeholder="例如：gpt-4o",
+                            lines=1
+                        )
+                    
+                    # 本地模型设置面板
+                    with gr.Accordion("本地模型设置", open=True, visible=False, elem_id="local-settings") as local_settings:
                         model_path = gr.Textbox(
                             label="本地模型路径", 
                             placeholder="输入你的本地模型路径",
                             lines=1
                         )
+                    
+                    # 绑定模型类型切换事件
+                    model_type.change(
+                        fn=self._toggle_model_settings,
+                        inputs=[model_type],
+                        outputs=[api_settings, local_settings]
+                    )
+                    
                     status_box = gr.Textbox(
                                 label="状态信息", 
                                 lines=2, 
@@ -355,7 +436,10 @@ class NovelGeneratorUI:
             # 绑定生成按钮事件
             generate_btn.click(
                 fn=self._generate_novel,
-                inputs=[user_intent, model_path, status_box, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector],
+                inputs=[
+                    user_intent, model_type, api_key, base_url, model_name, model_path,
+                    status_box, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector
+                ],
                 outputs=[status_box, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector]
             )
             
@@ -368,14 +452,15 @@ class NovelGeneratorUI:
             
             with gr.Accordion("使用说明", open=False):
                 gr.Markdown("""
-                1. 输入小说创作意图和本地模型路径
-                2. 点击"开始生成"按钮启动创作流程
-                3. 在各个标签页查看生成过程和结果：
+                1. 选择模型类型（API或本地模型）并填写相应配置
+                2. 输入小说创作意图
+                3. 点击"开始生成"按钮启动创作流程
+                4. 在各个标签页查看生成过程和结果：
                    - 📋 大纲：查看小说整体结构和章节规划
                    - 👥 角色档案：查看角色背景、性格和成长弧线
                    - 📄 章节内容：浏览各章节详细内容，可通过下拉框切换
                    - 📊 评估反馈：查看章节质量评分和改进建议
-                4. 生成完成后，可通过"保存小说"按钮将内容保存到本地文件
+                5. 生成完成后，可通过"保存小说"按钮将内容保存到本地文件
                 """)
         
         return demo
