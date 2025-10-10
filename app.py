@@ -25,6 +25,7 @@ def main():
     model_type = args.model_type
     if model_type == "api":
         model_name = input("请输入你的模型名字：")
+
         model_config = ModelConfig(
             api_key=api_key,
             api_url=base_url,
@@ -37,9 +38,11 @@ def main():
         )
     try:
         logger.info("开始小说生成流程")
-        
+
         app = create_workflow(model_config)
+        
         user_intent = input("请输入你的小说创作意图：")
+
         logger.info(f"用户创作意图: {user_intent}")
         result = app.invoke(
             {
