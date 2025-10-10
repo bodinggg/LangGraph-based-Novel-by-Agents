@@ -15,10 +15,12 @@ class ModelConfig(BaseModel):
 
 
 class BaseConfig(BaseModel):
-    max_new_tokens: int
-    temperature: float
-    top_p: float
-
+    max_new_tokens: int=3000
+    temperature: float=0.7
+    top_p: float=0.9
+    min_chapters: int=10
+    volume: int=1
+    master_outline: bool=True
     
 class ConfigLoader:
     def __init__(self, config_path:str="config.yaml"):
