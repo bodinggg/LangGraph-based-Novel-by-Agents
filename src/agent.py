@@ -1,19 +1,52 @@
-from typing import Dict, Any
 
 from src.prompt import *
 from src.state import NovelState
 from src.model import ChapterContent
 from src.model_manager import ModelManager
-
+from src.config_loader import BaseConfig
 
 # 大纲代理 - 用于生成统领大纲
 class OutlineGeneratorAgent:
-    def __init__(self, model_manager: ModelManager, config: Dict[str, Any]):
+    def __init__(self, model_manager: ModelManager, config: BaseConfig):
         self.model_manager = model_manager
         self.config = config
-        self.system_prompt = OUTLINE_PROMPT
+        self.system_prompt = OUTLINE_PROMPT.format(min_chapters=config.min_chapters)
+
+    # 总纲生成(卷册划分)    
+    def generate_master_outline(self, user_intent: str)->str:
+        min_chapters = self.config.min_chapters
+        volume = self.config.volume
+        master_prompt = MASTER_OUTLINE_PROMPT.format(
+            user_intent=user_intent, min_chapters=min_chapters, volume=volume
+        )
+        messages = [
+            {"role":"system", "content": OUTLINE_INSTRUCT},
+            {"role":"user", "content":master_prompt}
+        ]
+        return self.model_manager.generate(messages, self.config)
         
+    # 基于总纲生成单卷
+    def generate_volume_chapters(self, state: NovelState, volume_index:int) -> str:
+        master_outline = state.validated_outline.master_outline
+        current_volume = master_outline[volume_index]
+        start_idx, end_idx = map(int, current_volume.chapters_range.split('-'))
         
+        # 提取前卷关键信息作为上下文
+        prev_context = ""
+        if volume_index > 0:
+            prev_volume = master_outline[volume_index - 1]
+            prev_context = f"前卷《{prev_volume.title}》结局：{prev_volume.key_turning_points[-1]}\n"
+
+        prompt = VOLUME_OUTLINE_PROMPT.format(
+            prev_context=prev_context, current_volume=current_volume.title, start_idx=start_idx, end_idx=end_idx, num_chapter=end_idx-start_idx+1
+        )
+        
+        messages = [
+            {"role": "system", "content": self.system_prompt},
+            {"role": "user", "content": prompt}
+        ]
+        return self.model_manager.generate(messages, self.config)
+    
     def generate_outline(self, state: NovelState) -> str:
         
         user_intent = state.user_intent
@@ -41,7 +74,7 @@ class OutlineGeneratorAgent:
 
 # 角色代理 - 用于生成角色档案
 class CharacterAgent:
-    def __init__(self, model_manager: ModelManager, config: Dict[str, Any]):
+    def __init__(self, model_manager: ModelManager, config: BaseConfig):
         self.model_manager = model_manager
         self.config = config
         self.system_prompt = CHARACTER_PROMPT
@@ -88,7 +121,7 @@ class CharacterAgent:
     
 # 写作代理 - 用于单章撰写
 class WriterAgent:
-    def __init__(self, model_manager: ModelManager, config: Dict[str, Any]):
+    def __init__(self, model_manager: ModelManager, config: BaseConfig):
         self.model_manager = model_manager
         self.config = config
         self.system_prompt = WRITER_PROMPT
@@ -265,7 +298,7 @@ class WriterAgent:
 
 # 反思代理 - 用于评审章节质量
 class ReflectAgent:
-    def __init__(self, model_manager: ModelManager, config: Dict[str, Any]):
+    def __init__(self, model_manager: ModelManager, config: BaseConfig):
         self.model_manager = model_manager
         self.config = config
         self.system_prompt = REFLECT_PROMPT
