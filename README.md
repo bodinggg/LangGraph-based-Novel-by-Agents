@@ -140,3 +140,7 @@ class WriterConfig:
 - 完整的小说大纲（标题、类型、章节结构等）
 - 详细角色档案（背景、性格、成长弧线等）
 - 各章节完整内容（符合大纲设定，角色言行一致）
+
+## 流程图
+既然能看到最后，那这个流程图也会有耐心看的（我猜）
+![workflow display](assets/workflow_graph.png)
