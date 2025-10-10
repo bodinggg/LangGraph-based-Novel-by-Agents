@@ -1,6 +1,6 @@
 
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
 
 # 定义角色数据模型，继承BaseModel实现数据验证功能
 class Character(BaseModel):
@@ -19,6 +19,13 @@ class ChapterOutline(BaseModel):
     characters_involved: List[str]  # 章节中涉及的角色名称列表
     setting: str            # 章节发生的场景设定（如地点、时间等）
 
+# 卷册数据模型
+class VolumeOutline(BaseModel):
+    title: str                      # 卷册标题
+    chapters_range: str             # 章节范围（如"1-30"）
+    theme: str                      # 卷册主题
+    key_turning_points: List[str]   # 卷内关键转折点
+
 # 定义小说大纲数据模型，用于整体规划小说的核心要素
 class NovelOutline(BaseModel):
     title: str              # 小说的标题
@@ -26,8 +33,13 @@ class NovelOutline(BaseModel):
     theme: str              # 小说的核心主题（如人性、自由、成长等）
     setting: str            # 小说的整体场景设定（如时代背景、世界架构等）
     plot_summary: str       # 小说的情节概要
-    chapters: List[ChapterOutline]  # 小说包含的所有章节大纲列表
+    master_outline: List[VolumeOutline]  # 总纲（卷册划分）
+    chapters: List[Optional[ChapterOutline]]  # 小说包含的所有章节大纲列表
     characters: List[str]  # 小说中所有角色的名称列表
+
+
+    
+
 
 # 定义章节内容数据模型，用于结构化章节的具体内容
 class ChapterContent(BaseModel):
