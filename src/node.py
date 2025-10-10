@@ -11,9 +11,171 @@ from src.agent import (
 from src.tool import extract_json
 from src.state import NovelState
 from src.log_config import loggers
+from src.config_loader import OutlineConfig
 
 logger = loggers['node']
+        
 
+# -------------------- 大纲(分卷) -------------------- [生成 -> 验证 -> 状态判断]
+def generate_master_outline_node(state: NovelState, outline_agent:OutlineGeneratorAgent) -> NovelState:
+    logger.info(f"开始分卷生成小说大纲(第{state.attempt + 1}次尝试)")
+    raw_master = outline_agent.generate_master_outline(state.user_intent)
+    extracted_json = extract_json(raw_master)
+    if extracted_json:
+        raw_master = extracted_json
+        print(f"【分卷】成功提取大纲JSON内容")
+    return {
+        "raw_master_outline": raw_master,
+        "attempt":state.attempt+1
+    }
+    
+def validate_master_outline_node(state: NovelState) -> NovelState:
+    try:
+        master_data = json.loads(state.raw_master_outline)
+        master_data["chapters"]=[]
+        validated_outline = NovelOutline(** master_data)
+        master_outline = validated_outline.master_outline
+        # 验证卷册章节范围合理性（总章节≥100）
+        total_chapters = sum(int(vol.chapters_range.split('-')[1]) - int(vol.chapters_range.split('-')[0]) + 1 
+                            for vol in master_outline)
+        if total_chapters < state.min_chapters:
+            raise ValueError(f"总章节数不足{state.min_chapters}（当前{total_chapters}章）")
+        
+        
+            
+        return {
+            "validated_outline": validated_outline,
+            "outline_validated_error": None,
+            "attempt":0,
+            "current_volume_index": 0  # 初始化当前卷索引
+            
+        }
+        
+    except json.JSONDecodeError as e:
+        # 提供更详细的错误位置信息
+        
+        error_lines = state.raw_outline.split('\n')
+        error_line = min(e.lineno - 1, len(error_lines) - 1) if e.lineno else 0
+        context = "\n".join(error_lines[max(0, error_line - 2):min(len(error_lines), error_line + 3)])
+        
+        error_msg = (f"JSON解析错误: 在第{e.lineno}行, 第{e.colno}列 - {str(e)}\n"
+                    f"错误位置附近内容:\n{context}\n"
+                    "请检查括号是否匹配、是否使用双引号、逗号是否正确。")
+        logger.info(f"【分卷】 JSON格式解析错误:\n{error_msg}")
+        return {
+            "outline_validated_error": error_msg
+        }     
+    except Exception as e:
+        logger.info(f"【分卷】格式验证失败: {str(e)}")
+        return {
+            "outline_validated_error": f"大纲验证失败: {str(e)}"
+        }
+
+def check_master_outline_node(state: NovelState) -> Literal["success", "retry", "failure"]:
+    """检查大纲验证结果"""
+    print(f"检查大纲分卷验证结果...")
+    if state.outline_validated_error is None:
+        logger.info(f"【分卷】success:大纲检查成功, 转移至 generate_volume_outline 节点")
+        return "success"
+    elif state.attempt < state.max_attempts:
+        logger.info(f"【分卷】retry:验证失败, 将进行第{state.attempt + 1}次重试...")
+        return "retry"
+    else:
+        logger.info(f"【分卷】failure:大纲检查失败, 转移至 failure 节点")
+        return "failure"
+        
+# -------------------- 大纲(分章) -------------------- [生成 -> 验证 -> 状态判断]   
+def generate_volume_outline_node(state:NovelState, outline_agent:OutlineGeneratorAgent) -> NovelState:
+    volume_index = state.current_volume_index
+    raw_chapters = outline_agent.generate_volume_chapters(state, volume_index)
+    extracted_json = extract_json(raw_chapters)
+    if extracted_json:
+        raw_chapters = extracted_json
+        print(f"【分章】成功提取大纲JSON内容")
+    return {
+        "raw_volume_chapters": raw_chapters,
+        "attempt":state.attempt+1
+    }
+
+def validate_volume_outline_node(state:NovelState) -> NovelState:
+    try:
+        volume_index = state.current_volume_index
+        volume_data = json.loads(state.raw_volume_chapters)
+        chapters = [ChapterOutline(**chap) for chap in volume_data["chapters"]]
+        # 验证章节编号与总纲一致
+        master_vol = state.validated_outline.master_outline[volume_index]
+        start_idx, end_idx = map(int, master_vol.chapters_range.split('-'))
+        if len(chapters) != end_idx - start_idx + 1:
+            raise ValueError(f"卷{volume_index+1}章节数不符（应有{end_idx-start_idx+1}章，实际{len(chapters)}章）")
+        
+        
+        return {
+            "validated_chapters": chapters,
+            "outline_validated_error": None,
+            "attempt":0
+        }
+    except json.JSONDecodeError as e:
+        # 提供更详细的错误位置信息
+        error_lines = state.raw_outline.split('\n')
+        error_line = min(e.lineno - 1, len(error_lines) - 1) if e.lineno else 0
+        context = "\n".join(error_lines[max(0, error_line - 2):min(len(error_lines), error_line + 3)])
+        
+        error_msg = (f"JSON解析错误: 在第{e.lineno}行, 第{e.colno}列 - {str(e)}\n"
+                    f"错误位置附近内容:\n{context}\n"
+                    "请检查括号是否匹配、是否使用双引号、逗号是否正确。")
+        logger.info(f"【分卷】 JSON格式解析错误:\n{error_msg}")
+        return {"outline_validated_error": error_msg}    
+    except Exception as e:
+        return {"outline_validated_error": str(e), "attempt": state.attempt + 1}     
+
+def check_volume_outline_node(state: NovelState) -> Literal["success", "retry", "failure"]:
+    """检查大纲验证结果"""
+    print(f"检查大纲分章验证结果...")
+    if state.outline_validated_error is None:
+        logger.info(f"【分章】success:大纲检查成功, 转移至 accept_outline 节点")
+        return "success"
+    elif state.attempt < state.max_attempts:
+        logger.info(f"【分章】retry:验证失败, 将进行第{state.attempt + 1}次重试...")
+        return "retry"
+    else:
+        logger.info(f"【分章】failure:大纲检查失败, 转移至 failure 节点")
+        return "failure"
+
+# 中继节点
+def volume2character(state:NovelState) -> NovelState:
+
+    return {"attempt":0}
+
+
+# 判断大纲是否创建结束
+# 接受章节节点
+def accept_outline_node(state: NovelState) -> NovelState:
+    """接受当前卷, 将其添加到大纲中章节列表并准备处理下一卷"""
+    # 合并到总章节列表
+    chapters = state.validated_chapters
+    validated_outline = state.validated_outline
+    validated_outline.chapters.extend(chapters)
+    current_volume_index = state.current_volume_index
+    # 重置卷相关状态, 准备处理下一卷
+    return {
+        "validated_outline": validated_outline,
+        "current_volume_index": current_volume_index + 1,
+        "raw_volume_chapters": None
+    }
+
+
+def check_outline_completion_node(state: NovelState) -> Literal["continue", "complete"]:
+    """检查是否所有大纲的卷都已撰写完成"""
+    total_volumes = len(state.validated_outline.master_outline)
+    current_index = state.current_volume_index
+    
+    if current_index < total_volumes:
+        state.attempt = 0
+        logger.info("接受此卷, 将其添加到大纲中章节列表并准备处理下一卷")
+        return "continue"
+    else:
+        logger.info("接受此卷, 已经完成所有大纲中章节列表")
+        return "complete"
 
 # -------------------- 大纲 -------------------- [生成 -> 验证 -> 状态判断]
 def generate_outline_node(state: NovelState, outline_agent: OutlineGeneratorAgent) -> NovelState:
@@ -33,6 +195,7 @@ def generate_outline_node(state: NovelState, outline_agent: OutlineGeneratorAgen
         "attempt": state.attempt + 1
     }
 
+
 def validate_outline_node(state: NovelState) -> NovelState:
     """验证小说大纲的节点"""
     logger.info(f"开始生成小说大纲(第{state.attempt + 1}次尝试)")
@@ -50,6 +213,9 @@ def validate_outline_node(state: NovelState) -> NovelState:
                 if char not in all_characters:
                     raise ValueError(f"章节'{chapter.title}'中出现的角色'{char}'不在角色列表中")
         
+        if len(outline_data.chapters) < OutlineConfig.min_chapters:
+            raise ValueError(f"章节数不足，至少需要{OutlineConfig.min_chapters}个章节，实际生成了{len(outline_data.chapters)}个章节")
+        
         return {
             "validated_outline": validated_outline,
             "attempt":0,
@@ -57,7 +223,7 @@ def validate_outline_node(state: NovelState) -> NovelState:
         }
     except json.JSONDecodeError as e:
         # 提供更详细的错误位置信息
-        logger.info(f"【大纲】 JSON格式解析错误:\n")
+        
         error_lines = state.raw_outline.split('\n')
         error_line = min(e.lineno - 1, len(error_lines) - 1) if e.lineno else 0
         context = "\n".join(error_lines[max(0, error_line - 2):min(len(error_lines), error_line + 3)])
@@ -65,6 +231,7 @@ def validate_outline_node(state: NovelState) -> NovelState:
         error_msg = (f"JSON解析错误: 在第{e.lineno}行, 第{e.colno}列 - {str(e)}\n"
                     f"错误位置附近内容:\n{context}\n"
                     "请检查括号是否匹配、是否使用双引号、逗号是否正确。")
+        logger.info(f"【大纲】 JSON格式解析错误:\n{error_msg}")
         return {"outline_validated_error": error_msg, "validated_outline": None}
     except Exception as e:
         logger.info(f"【大纲】格式验证失败: {str(e)}")
