@@ -1,7 +1,10 @@
 outline_config:
-  max_new_tokens: 3000
+  max_new_tokens: 4096
   temperature: 0.9
   top_p: 0.9
+  min_chapters: 30      # 最少章节约束
+  volume: 2             # 分卷
+  master_outline: True  # 是否开启分卷
 
 character_config:
   max_new_tokens: 3000
