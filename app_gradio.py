@@ -5,7 +5,7 @@ from datetime import datetime
 from src.workflow import create_workflow
 from src.log_config import loggers
 from src.model import NovelOutline
-from src.config_loader import ModelConfig
+from src.config_loader import ModelConfig, BaseConfig
 
 def get_args():
     parser = argparse.ArgumentParser()
@@ -40,8 +40,13 @@ class NovelGeneratorUI:
         """将小说大纲对象格式化为Markdown字符串"""
         if not outline:
             return "尚未生成大纲"
+        outline_str = f"## 📚 小说总纲（卷册划分）\n"
+        for i, vol in enumerate(outline.master_outline, 1):
+            outline_str += f"**卷{i}《{vol.title}》**（第{vol.chapters_range}章）\n"
+            outline_str += f"  主题: {vol.theme}\n"
+            outline_str += f"  关键转折: {', '.join(vol.key_turning_points[:2])}...\n\n"
         
-        outline_str = f"## 📖 小说大纲\n"
+        outline_str += f"## 📖 小说大纲\n"
         outline_str += f"**标题**: {outline.title}\n\n"
         outline_str += f"**类型**: {outline.genre}\n\n"
         outline_str += f"**主题**: {outline.theme}\n\n"
@@ -129,7 +134,7 @@ class NovelGeneratorUI:
                 gr.update(visible=True)   # 本地模型设置面板
             )
 
-    def _generate_novel(self, user_intent, model_type, api_key, base_url, model_name, model_path, 
+    def _generate_novel(self, user_intent, model_type, api_key, base_url, model_name, model_path, min_chapters, volume, master_outline,
                       status_box, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector):
         """生成小说的主流程（生成器函数）"""
         if self.processing:
@@ -171,7 +176,9 @@ class NovelGeneratorUI:
             
             yield status, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector
             
-            self.workflow = create_workflow(model_config)
+            agent_config = BaseConfig(min_chapters=min_chapters, volume=volume, master_outline=master_outline)
+            
+            self.workflow = create_workflow(model_config, agent_config)
             status = self.__update_status("✅ 工作流初始化完成，开始生成小说...")
             yield status, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector
             
@@ -411,6 +418,26 @@ class NovelGeneratorUI:
                                 elem_classes="save-status-container"
                             )
                 
+                with gr.Column(scale=1):
+                    min_chapters = gr.Slider(
+                        minimum=10,
+                        maximum=1000,
+                        value = 50,
+                        step=1,
+                        label="最小章节数"
+                    )
+                    volume = gr.Slider(
+                        minimum=1,
+                        maximum=10,
+                        value = 2,
+                        step=1,
+                        label="分卷数量"
+                    )
+                    master_outline = gr.Checkbox(
+                        value=True,
+                        label="是否开启分卷解析大纲功能"
+                    )
+                
                 # 右侧内容展示区（占3份宽度）
                 with gr.Column(scale=2):
                     with gr.Tabs(elem_classes="info-card"):
@@ -437,7 +464,7 @@ class NovelGeneratorUI:
             generate_btn.click(
                 fn=self._generate_novel,
                 inputs=[
-                    user_intent, model_type, api_key, base_url, model_name, model_path,
+                    user_intent, model_type, api_key, base_url, model_name, model_path, min_chapters,volume, master_outline,
                     status_box, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector
                 ],
                 outputs=[status_box, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector]
