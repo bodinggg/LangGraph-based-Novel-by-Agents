@@ -36,22 +36,25 @@ class NovelGeneratorUI:
         logger.info(message)
         return message
 
-    def _format_outline(self, outline: NovelOutline):
+    def _format_outline(self, outline: NovelOutline, master_outline=True):
         """将小说大纲对象格式化为Markdown字符串"""
         if not outline:
             return "尚未生成大纲"
-        outline_str = f"## 📚 小说总纲（卷册划分）\n"
-        for i, vol in enumerate(outline.master_outline, 1):
-            outline_str += f"**卷{i}《{vol.title}》**（第{vol.chapters_range}章）\n"
-            outline_str += f"  主题: {vol.theme}\n"
-            outline_str += f"  关键转折: {', '.join(vol.key_turning_points[:2])}...\n\n"
-        
+        if master_outline:
+            outline_str = f"## 📚 小说总纲（卷册划分）\n"
+            for i, vol in enumerate(outline.master_outline, 1):
+                outline_str += f"**卷{i}《{vol.title}》**（第{vol.chapters_range}章）\n"
+                outline_str += f"  主题: {vol.theme}\n"
+                outline_str += f"  关键转折: {', '.join(vol.key_turning_points[:2])}...\n\n"
+        else:
+            outline_str = ""
         outline_str += f"## 📖 小说大纲\n"
         outline_str += f"**标题**: {outline.title}\n\n"
         outline_str += f"**类型**: {outline.genre}\n\n"
         outline_str += f"**主题**: {outline.theme}\n\n"
         outline_str += f"**背景**: {outline.setting}\n\n"
         outline_str += f"**情节概要**: {outline.plot_summary}\n\n"
+        outline_str += f"**主要角色**: {', '.join(outline.characters)}\n\n"
         outline_str += "### 📑 章节列表:\n"
         
         for i, chapter in enumerate(outline.chapters, 1):
@@ -195,7 +198,7 @@ class NovelGeneratorUI:
                     
                     if state_dict.get('validated_outline'):
                         self.validated_outline = state_dict['validated_outline']
-                        outline_box = self._format_outline(self.validated_outline)
+                        outline_box = self._format_outline(self.validated_outline, master_outline)
                     
                     if state_dict.get('validated_characters'):
                         self.validated_characters = state_dict['validated_characters']
@@ -295,6 +298,108 @@ class NovelGeneratorUI:
             logger.error(error_msg)
             return error_msg, self.__update_status(error_msg)
 
+    # 按章节保存
+    def _save_chapter_novel(self, save_path, status_box):
+        """保存生成的小说内容到本地文件"""
+        if self.final_result == "生成失败":
+            error_msg = "❌ 保存失败：小说生成过程已失败，无法保存内容"
+            return error_msg, self.__update_status(error_msg)
+        
+        if not self.validated_outline or not self.validated_characters or not self.all_chapters:
+            return "❌ 保存失败：请先完成小说生成（至少需要大纲、角色和章节内容）", status_box
+        
+        try:
+            if not save_path:
+                # 处理标题特殊字符，用于创建目录
+                title = self.validated_outline.title.replace(' ', '_').replace('/', '_')
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                default_root = "result"
+                # 创建主目录：result/标题_时间戳
+                main_dir = os.path.join(default_root, f"{title}_{timestamp}")
+                os.makedirs(main_dir, exist_ok=True)
+                
+                # 主文件路径（保存大纲和角色档案）
+                main_file_path = os.path.join(main_dir, "00_main_info.txt")
+            else:
+                # 如果指定了保存路径，将其视为目录
+                main_dir = save_path
+                os.makedirs(main_dir, exist_ok=True)
+                main_file_path = os.path.join(main_dir, "00_main_info.txt")
+            
+            with open(main_file_path, 'w', encoding='utf-8') as f:
+                f.write("=" * 50 + "\n")
+                f.write("【小说大纲】\n")
+                f.write("=" * 50 + "\n")
+                f.write(f"标题: {self.validated_outline.title}\n")
+                f.write(f"类型: {self.validated_outline.genre}\n")
+                f.write(f"主题: {self.validated_outline.theme}\n")
+                f.write(f"背景: {self.validated_outline.setting}\n\n")
+                f.write("情节概要:\n")
+                f.write(f"{self.validated_outline.plot_summary}\n\n")
+                
+                f.write("\n" + "=" * 50 + "\n")
+                f.write("【角色档案】\n")
+                f.write("=" * 50 + "\n")
+                for char in self.validated_characters:
+                    f.write(f"角色名称: {char.name}\n")
+                    f.write(f"背景: {char.background}\n")
+                    f.write(f"性格: {char.personality}\n")
+                    f.write(f"目标: {', '.join(char.goals)}\n")
+                    f.write(f"冲突: {', '.join(char.conflicts)}\n")
+                    f.write(f"成长弧线: {char.arc}\n\n")
+            
+            # 写入主文件（大纲和角色档案）
+            with open(main_file_path, 'w', encoding='utf-8') as f:
+                f.write("=" * 50 + "\n")
+                f.write("【小说大纲】\n")
+                f.write("=" * 50 + "\n")
+                f.write(f"标题: {self.validated_outline.title}\n")
+                f.write(f"类型: {self.validated_outline.genre}\n")
+                f.write(f"主题: {self.validated_outline.theme}\n")
+                f.write(f"背景: {self.validated_outline.setting}\n\n")
+                f.write("情节概要:\n")
+                f.write(f"{self.validated_outline.plot_summary}\n\n")
+                
+                f.write("\n" + "=" * 50 + "\n")
+                f.write("【角色档案】\n")
+                f.write("=" * 50 + "\n")
+                for char in self.validated_characters:
+                    f.write(f"角色名称: {char.name}\n")
+                    f.write(f"背景: {char.background}\n")
+                    f.write(f"性格: {char.personality}\n")
+                    f.write(f"目标: {', '.join(char.goals)}\n")
+                    f.write(f"冲突: {', '.join(char.conflicts)}\n")
+                    f.write(f"成长弧线: {char.arc}\n\n")
+
+            # 分章保存章节内容
+            chapter_paths = []
+            for i, chapter in enumerate(self.all_chapters, 1):
+                # 处理章节标题特殊字符
+                chapter_title = chapter.title.replace(' ', '_').replace('/', '_')
+                # 章节文件名格式：01_章节标题.txt、02_章节标题.txt...
+                chapter_filename = f"{i:02d}_{chapter_title}.txt"
+                chapter_path = os.path.join(main_dir, chapter_filename)
+                
+                with open(chapter_path, 'w', encoding='utf-8') as f:
+                    f.write(f"第{i}章: {chapter.title}\n")
+                    f.write("-" * 40 + "\n")
+                    f.write(f"{chapter.content}\n")
+                
+                chapter_paths.append(chapter_path)
+
+            # 构建成功消息
+            success_msg = f"✅ 保存成功！\n"
+            success_msg += f"主文件（大纲+角色）路径：{main_file_path}\n"
+            success_msg += f"共保存 {len(chapter_paths)} 个章节文件到目录：{main_dir}"
+            logger.info(success_msg)
+            return success_msg, self.__update_status(success_msg)
+            
+        except Exception as e:
+            error_msg = f"❌ 保存失败：{str(e)}"
+            logger.error(error_msg)
+            return error_msg, self.__update_status(error_msg)
+    
+        
     def _load_css(self, filename):
         if os.path.exists(filename):
             with open(filename, "r", encoding="utf-8") as f:
@@ -437,7 +542,8 @@ class NovelGeneratorUI:
                         value=True,
                         label="是否开启分卷解析大纲功能"
                     )
-                
+                   
+                            
                 # 右侧内容展示区（占3份宽度）
                 with gr.Column(scale=2):
                     with gr.Tabs(elem_classes="info-card"):
@@ -472,7 +578,7 @@ class NovelGeneratorUI:
             
             # 绑定保存按钮事件
             save_btn.click(
-                fn=self._save_novel,
+                fn=self._save_chapter_novel,    # 分章节存储
                 inputs=[save_path, status_box],
                 outputs=[save_status, status_box]
             )
