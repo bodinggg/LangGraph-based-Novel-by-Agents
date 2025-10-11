@@ -208,7 +208,6 @@ def validate_outline_node(state: NovelState) -> NovelState:
     try:
         # 解析JSON
         outline_data = json.loads(state.raw_outline)
-        print(f'[test] outline is {outline_data["chapters"]}')
         # 验证数据结构
         validated_outline = NovelOutline(** outline_data)
         
