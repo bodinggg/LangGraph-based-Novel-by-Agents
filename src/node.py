@@ -108,7 +108,13 @@ def validate_volume_outline_node(state:NovelState) -> NovelState:
         if len(chapters) != end_idx - start_idx + 1:
             raise ValueError(f"卷{volume_index+1}章节数不符（应有{end_idx-start_idx+1}章，实际{len(chapters)}章）")
         
-        
+        # 检查角色一致性
+        all_characters = set(state.validated_outline.characters)
+        for chapter in state.validated_outline.chapters:
+            for char in chapter.characters_involved:
+                if char not in all_characters:
+                    raise ValueError(f"章节'{chapter.title}'中出现的角色'{char}'不在角色列表中")
+                
         return {
             "validated_chapters": chapters,
             "outline_validated_error": None,
@@ -202,7 +208,7 @@ def validate_outline_node(state: NovelState) -> NovelState:
     try:
         # 解析JSON
         outline_data = json.loads(state.raw_outline)
-        
+        print(f'[test] outline is {outline_data["chapters"]}')
         # 验证数据结构
         validated_outline = NovelOutline(** outline_data)
         
@@ -213,7 +219,7 @@ def validate_outline_node(state: NovelState) -> NovelState:
                 if char not in all_characters:
                     raise ValueError(f"章节'{chapter.title}'中出现的角色'{char}'不在角色列表中")
         
-        if len(outline_data.chapters) < OutlineConfig.min_chapters:
+        if len(outline_data['chapters']) < OutlineConfig.min_chapters:
             raise ValueError(f"章节数不足，至少需要{OutlineConfig.min_chapters}个章节，实际生成了{len(outline_data.chapters)}个章节")
         
         return {
