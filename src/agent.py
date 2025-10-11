@@ -10,7 +10,6 @@ class OutlineGeneratorAgent:
     def __init__(self, model_manager: ModelManager, config: BaseConfig):
         self.model_manager = model_manager
         self.config = config
-        self.system_prompt = OUTLINE_PROMPT.format(min_chapters=config.min_chapters)
 
     # 总纲生成(卷册划分)    
     def generate_master_outline(self, user_intent: str)->str:
@@ -42,7 +41,7 @@ class OutlineGeneratorAgent:
         )
         
         messages = [
-            {"role": "system", "content": self.system_prompt},
+            {"role": "system", "content": OUTLINE_INSTRUCT},
             {"role": "user", "content": prompt}
         ]
         return self.model_manager.generate(messages, self.config)
@@ -53,7 +52,7 @@ class OutlineGeneratorAgent:
         error_message = state.outline_validated_error
         
         # 构建user信息
-        user_message = f"用户需求：{user_intent}\n请先思考, 然后生成大纲"
+        user_message = OUTLINE_PROMPT.format(user_intent=user_intent, min_chapters = self.config.min_chapters)
         
         if error_message:
             user_message = f"之前的尝试出现错误: {error_message}\n请修正错误并重新生成符合格式的大纲。特别注意要用```json和```正确包裹JSON内容。\n{user_message}"
@@ -62,7 +61,7 @@ class OutlineGeneratorAgent:
         messages = [
             {
                 "role":"system",
-                "content":self.system_prompt
+                "content":OUTLINE_INSTRUCT
             },
             {
                 "role":"user",
