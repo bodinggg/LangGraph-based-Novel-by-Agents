@@ -5,7 +5,6 @@ from typing import Dict
 from langgraph.graph import StateGraph, END
 from src.agent import OutlineGeneratorAgent, CharacterAgent, WriterAgent, ReflectAgent 
 from src.node import *
-from src.client import SharedModelManager
 from src.state import NovelState
 from src.log_config import loggers
 from src.model_manager import LocalModelManager, APIModelManager
