@@ -36,13 +36,11 @@ def create_workflow(model_config: ModelConfig, Agent_config: BaseConfig= None) -
             retry_delay=model_config.retry_delay
         )
     logger.info(f"成功加载{model_type}模型管理器")
-    print(f"[test] OutlineConfig is {OutlineConfig}")
     # 允许改变config值
     if Agent_config is not None:
         OutlineConfig.min_chapters = Agent_config.min_chapters
         OutlineConfig.volume = Agent_config.volume
         OutlineConfig.master_outline = Agent_config.master_outline
-    print(f"[test] OutlineConfig is {OutlineConfig}")
     # 初始化 Agent
     outline_agent = OutlineGeneratorAgent(model_manager, OutlineConfig)    # 大纲
     character_agent = CharacterAgent(model_manager, CharacterConfig)         # 角色
@@ -54,7 +52,6 @@ def create_workflow(model_config: ModelConfig, Agent_config: BaseConfig= None) -
     # 创建图
     workflow = StateGraph(NovelState)
     # -------------------- 创建节点 --------------------
-    print(f"[test] master_outline is {OutlineConfig.master_outline}")
     if OutlineConfig.master_outline:
         # 分卷
         workflow.add_node("generate_master_outline",
