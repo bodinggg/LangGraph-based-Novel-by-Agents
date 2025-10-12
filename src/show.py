@@ -1,6 +1,7 @@
 """
 让生成的过程可视化, 可以选取哪部分用来可视化
 """
+import os
 
 def print_save(result):
     # 处理结果
@@ -43,6 +44,7 @@ def print_save(result):
         print("\n" + "-" * 80)
         save_option = input("是否要将完整内容保存(y)或者分别保存(c)到文件? (y/c/n): ")
         if save_option.lower() == 'y':
+            os.makedirs("./resultresult", exist_ok=True)
             filename = f"./result/{outline.title.replace(' ', '_')}.txt"
             with open(filename, 'w', encoding='utf-8') as f:
                 f.write(f"小说标题: {outline.title}\n")
@@ -68,6 +70,7 @@ def print_save(result):
             print(f"内容已保存到 {filename}")
         elif save_option.lower() == 'c':
             filepath = f"./result/{outline.title.replace(' ', '_')}/"
+            os.makedirs(filepath, exist_ok=True)
             with open(filepath+"outline.txt", 'w', encoding='utf-8') as f:
                 f.write(f"小说标题: {outline.title}\n")
                 f.write(f"类型: {outline.genre}\n")
