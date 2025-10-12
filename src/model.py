@@ -33,7 +33,7 @@ class NovelOutline(BaseModel):
     theme: str              # 小说的核心主题（如人性、自由、成长等）
     setting: str            # 小说的整体场景设定（如时代背景、世界架构等）
     plot_summary: str       # 小说的情节概要
-    master_outline: List[VolumeOutline]  # 总纲（卷册划分）
+    master_outline: Optional[List[VolumeOutline]]=None  # 总纲（卷册划分）
     chapters: List[Optional[ChapterOutline]]  # 小说包含的所有章节大纲列表
     characters: List[str]  # 小说中所有角色的名称列表
 
