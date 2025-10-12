@@ -41,7 +41,7 @@ def print_save(result):
                 
         # 提示保存选项
         print("\n" + "-" * 80)
-        save_option = input("是否要将完整内容保存到文件? (y/n): ")
+        save_option = input("是否要将完整内容保存(y)或者分别保存(c)到文件? (y/c/n): ")
         if save_option.lower() == 'y':
             filename = f"./result/{outline.title.replace(' ', '_')}.txt"
             with open(filename, 'w', encoding='utf-8') as f:
@@ -65,7 +65,33 @@ def print_save(result):
                 for i, chapter in enumerate(content, 1):
                     f.write(f"第{i}章: {chapter.title}\n")
                     f.write(f"{chapter.content}\n\n")
-                
             print(f"内容已保存到 {filename}")
+        elif save_option.lower() == 'c':
+            filepath = f"./result/{outline.title.replace(' ', '_')}/"
+            with open(filepath+"outline.txt", 'w', encoding='utf-8') as f:
+                f.write(f"小说标题: {outline.title}\n")
+                f.write(f"类型: {outline.genre}\n")
+                f.write(f"主题: {outline.theme}\n")
+                f.write(f"背景: {outline.setting}\n\n")
+                f.write("情节概要:\n")
+                f.write(f"{outline.plot_summary}\n\n")
+                    
+                f.write("角色档案:\n")
+                for char in character:
+                    f.write(f"角色名称: {char.name}\n")
+                    f.write(f"背景: {char.background}\n")
+                    f.write(f"性格: {char.personality}\n")
+                    f.write(f"目标: {', '.join(char.goals)}\n")
+                    f.write(f"冲突: {', '.join(char.conflicts)}\n")
+                    f.write(f"成长弧线: {char.arc}\n\n")
+                    
+            
+            for i, chapter in enumerate(content, 1):
+                with open(filepath+"{i:02d}_{chapter.title}.txt", 'w', encoding='utf-8') as f:
+                    f.write(f"第{i}章: {chapter.title}\n")
+                    f.write(f"{chapter.content}\n\n")
+                
+        
+            print(f"内容已保存到 {filepath}")
     else:
         print(f"\n生成失败: {result['final_error']}")
