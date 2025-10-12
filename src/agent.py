@@ -37,13 +37,15 @@ class OutlineGeneratorAgent:
             prev_context = f"前卷《{prev_volume.title}》结局：{prev_volume.key_turning_points[-1]}\n"
 
         prompt = VOLUME_OUTLINE_PROMPT.format(
-            prev_context=prev_context, current_volume=current_volume.title, start_idx=start_idx, end_idx=end_idx, num_chapter=end_idx-start_idx+1
+            prev_context=prev_context, current_volume=current_volume.title, start_idx=start_idx, end_idx=end_idx, num_chapter=end_idx-start_idx+1, master_outline=state.validated_outline
         )
-        
+        if state.outline_validated_error:
+            prompt = f"之前的尝试出现错误: {state.outline_validated_error}\n请修正错误并重新生成符合格式的大纲。特别注意要用```json和```正确包裹JSON内容。\n{prompt}"
         messages = [
-            {"role": "system", "content": OUTLINE_INSTRUCT},
-            {"role": "user", "content": prompt}
+            {"role":"system", "content": OUTLINE_INSTRUCT},
+            {"role":"user", "content":prompt}
         ]
+        
         return self.model_manager.generate(messages, self.config)
     
     def generate_outline(self, state: NovelState) -> str:
@@ -76,7 +78,6 @@ class CharacterAgent:
     def __init__(self, model_manager: ModelManager, config: BaseConfig):
         self.model_manager = model_manager
         self.config = config
-        self.system_prompt = CHARACTER_PROMPT
         
     
     def generate_characters(self, state: NovelState) -> str:
@@ -98,21 +99,25 @@ class CharacterAgent:
         
         # 构建角色生成提示
         context = f"小说标题: {outline.title}\n类型: {outline.genre}\n背景: {outline.setting}\n情节概要: {outline.plot_summary}\n\n"
-        context += "角色列表及他们在故事中的关键事件:\n"
+        context = "角色列表及他们在故事中的关键事件:\n"
         for name, events in character_context.items():
             context += f"- {name}: {'; '.join(events[:3])}\n"  # 取前3个关键事件
+        
+        prompt = CHARACTER_PROMPT.format(
+            outline_title=outline.title,
+            outline_genre=outline.genre,
+            outline_setting=outline.setting,
+            outline_plot_summary=outline.plot_summary,
+            character_list=', '.join(characters_list),
+            context=context
+        )    
         if error_message:
-            context += error_message
-        user_message = f"根据以下小说大纲生成详细角色档案:\n{context}\n请生成符合格式的角色档案JSON:"
+            prompt += f"\n\n之前的尝试出现错误: {error_message}\n请修正错误并重新生成角色档案。"
         
         messages = [
             {
-                "role":"system",
-                "content":self.system_prompt
-            },
-            {
                 "role":"user",
-                "content":user_message
+                "content":prompt
             }
         ]
         
@@ -123,71 +128,67 @@ class WriterAgent:
     def __init__(self, model_manager: ModelManager, config: BaseConfig):
         self.model_manager = model_manager
         self.config = config
-        self.system_prompt = WRITER_PROMPT
-
     
     def write_chapter(self, state: NovelState) -> str:
         """撰写单章内容"""
         
         error_message = state.current_chapter_validated_error
         outline = state.validated_outline
-        characters = state.validated_characters
-        
+        # 调用当前章节涉及角色的角色档案
+        characters = [ c for c in state.validated_characters if c.name in outline.chapters[state.current_chapter_index].characters_involved]
         current_chapter_index = state.current_chapter_index
-        chapters = outline.chapters
-        chapter_outline = chapters[current_chapter_index]
-        novel_title = outline.title
-        genre = outline.genre
-        setting = outline.setting
+        
+        
         quality = state.validated_evaluation
         if quality:
+            print(f"[test] quality:\n{quality}")
             revision_feedback = quality.feedback
         else:
             revision_feedback = None    
         
         
         # 构建上下文信息
-        context = f"小说标题: {novel_title}\n类型: {genre}\n整体背景: {setting}\n\n"
-        
-        # 添加当前章节大纲
-        context += "当前章节大纲:\n"
-        context += f"标题: {chapter_outline.title}\n"
-        context += f"摘要: {chapter_outline.summary}\n"
-        context += f"关键事件: {', '.join(chapter_outline.key_events)}\n"
-        context += f"场景: {chapter_outline.setting}\n\n"
-        
-        # 添加本章涉及的角色信息
-        involved_chars = [char for char in characters 
-                         if char.name in chapter_outline.characters_involved]
-        context += "本章涉及角色:\n"
-        for char in involved_chars:
-            context += f"- {char.name}: 性格={char.personality}; 目标={', '.join(char.goals[:2])}; 背景摘要={char.background}\n"
-        
-        # 添加前情提要（最近2章）
-        if current_chapter_index > 1:
-            context += "\n前情提要:\n"
-            for prev in state.validated_outline.chapters[current_chapter_index-2:current_chapter_index]:  # 只取最近2章
-                context += f"第{current_chapter_index}章《{prev.title}》: {prev.summary}...\n"
+        prompt = WRITER_PROMPT.format(
+            genre=outline.genre,
+            outline_setting=outline.setting,
+            outline_title=outline.title,
+            outline_theme = outline.theme,
+            outline_plot_summary = outline.plot_summary,
+            character_list = ', '.join(outline.characters),
+            pre_summary = outline.chapters[current_chapter_index-1].summary if current_chapter_index > 0 else "无",
+            pre_context = state.chapters_content[-1].content[-100:] if current_chapter_index > 0 else "无",
+            post_summary = outline.chapters[current_chapter_index+1].summary if current_chapter_index < len(outline.chapters)-1 else "无",
+            chapter_outline = outline.chapters[current_chapter_index],
+            chapter_outline_title = outline.chapters[current_chapter_index].title,
+            chapter_outline_key_events = ', '.join(outline.chapters[current_chapter_index].key_events),
+            chapter_outline_setting = outline.chapters[current_chapter_index].setting,
+            chapter_outline_summary = outline.chapters[current_chapter_index].summary,
+            character = characters,
+            current_chapter_idx = current_chapter_index,
+            num_chapters = len(outline.chapters),
+            word_count = 3000,
+        )
+        # 错误信息与修改意见放在最后
         if error_message:
-            context += error_message
-        # 添加修改意见（如果有）
-        user_message = f"根据以下信息撰写章节内容:\n{context}\n请生成符合格式的章节JSON:"
+            prompt += error_message
         if revision_feedback:
-            user_message = f"修改意见:\n{revision_feedback}\n请根据以上意见修改章节内容, 保持核心情节不变但改进写作质量。\n{user_message}"
+            prompt += f"\n\n修改意见: {revision_feedback}"
 
         messages = [
             {
-                "role":"system",
-                "content":self.system_prompt
-            },
-            {
                 "role":"user",
-                "content":user_message
+                "content":prompt
             }
         ]
         
         return self.model_manager.generate(messages, self.config)
 
+    def _write_expansion(self, state: NovelState) -> str:
+        """扩写"""
+        pass
+
+
+    
     def write_section(self, state:NovelState) -> str:
         """分节写作"""
         # 章节基本信息
