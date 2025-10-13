@@ -8,7 +8,6 @@ from openai import (
     APIConnectionError,
     Timeout
 )
-
 from src.config_loader import BaseConfig
 
 # 抽象基类
@@ -64,7 +63,7 @@ class APIModelManager(ModelManager):
                 )
                 
                 return response.choices[0].message.content
-            except (APIError, APIConnectionError, Timeout) as e:
+            except Exception as e:
                 # 捕获常见的API错误
                 print(f"API 调用失败 （尝试 {attempt+1}/{self.max_retries}: {str(e)}")
                 if attempt+1 < self.max_retries:
