@@ -29,7 +29,7 @@
 python app_gradio.py --port 7999
 ```
 ## 示例（您仅仅需要输入意图，模型帮你考虑一切）
-![Gradio前端界面（2025-10-09更新）](assets/chapter_1.png)
+![Gradio前端界面（2025-10-09更新）](assets/outline_2.png)
 
 ## 安装指南
 
@@ -101,6 +101,7 @@ my_novel/
    ├── node.py              # 工作流节点函数，实现各环节具体逻辑
    ├── model.py             # 数据模型定义，基于Pydantic实现结构验证
    ├── state.py             # 全局状态管理，存储创作过程中的所有数据
+   ├── storage.py           # 持久化到本地
    ├── prompt.py            # 各Agent的提示词模板
    ├── config_loader.py            # 生成参数配置（长度、温度等）
    ├── log_config.py        # 配置log文件
