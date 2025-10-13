@@ -12,6 +12,7 @@ from src.tool import extract_json
 from src.state import NovelState
 from src.log_config import loggers
 from src.config_loader import OutlineConfig
+from src.storage import NovelStorage
 
 logger = loggers['node']
         
@@ -106,6 +107,7 @@ def validate_volume_outline_node(state:NovelState) -> NovelState:
         master_vol = state.validated_outline.master_outline[volume_index]
         start_idx, end_idx = map(int, master_vol.chapters_range.split('-'))
         if len(chapters) != end_idx - start_idx + 1:
+            logger.info(f"【分章】卷{volume_index+1}章节数不符（应有{end_idx-start_idx+1}章，实际{len(chapters)}章）")
             raise ValueError(f"卷{volume_index+1}章节数不符（应有{end_idx-start_idx+1}章，实际{len(chapters)}章）")
         
         # 检查角色一致性
@@ -113,7 +115,8 @@ def validate_volume_outline_node(state:NovelState) -> NovelState:
         for chapter in state.validated_outline.chapters:
             for char in chapter.characters_involved:
                 if char not in all_characters:
-                    raise ValueError(f"章节'{chapter.title}'中出现的角色'{char}'不在角色列表中")
+                    logger.info(f"【分章】角色'{char}'不在角色列表[{state.validated_outline.characters}]中")
+                    raise ValueError(f"章节'{chapter.title}'中出现的角色'{char}'不在角色列表[{state.validated_outline.characters}]中")
                 
         return {
             "validated_chapters": chapters,
@@ -129,22 +132,22 @@ def validate_volume_outline_node(state:NovelState) -> NovelState:
         error_msg = (f"JSON解析错误: 在第{e.lineno}行, 第{e.colno}列 - {str(e)}\n"
                     f"错误位置附近内容:\n{context}\n"
                     "请检查括号是否匹配、是否使用双引号、逗号是否正确。")
-        logger.info(f"【分卷】 JSON格式解析错误:\n{error_msg}")
+        logger.info(f"【分章】 JSON格式解析错误:\n{error_msg}")
         return {"outline_validated_error": error_msg}    
     except Exception as e:
-        return {"outline_validated_error": str(e), "attempt": state.attempt + 1}     
+        return {"outline_validated_error": str(e)}     
 
 def check_volume_outline_node(state: NovelState) -> Literal["success", "retry", "failure"]:
     """检查大纲验证结果"""
     print(f"检查大纲分章验证结果...")
     if state.outline_validated_error is None:
-        logger.info(f"【分章】success:大纲检查成功, 转移至 accept_outline 节点")
+        logger.info(f"【分章，卷{state.current_volume_index+1}】success:大纲检查成功, 转移至 accept_outline 节点")
         return "success"
     elif state.attempt < state.max_attempts:
-        logger.info(f"【分章】retry:验证失败, 将进行第{state.attempt + 1}次重试...")
+        logger.info(f"【分章，卷{state.current_volume_index+1}】retry:验证失败, 将进行第{state.attempt + 1}次重试...")
         return "retry"
     else:
-        logger.info(f"【分章】failure:大纲检查失败, 转移至 failure 节点")
+        logger.info(f"【分章，卷{state.current_volume_index+1}】failure:大纲检查失败, 转移至 failure 节点")
         return "failure"
 
 # 中继节点
@@ -162,6 +165,7 @@ def accept_outline_node(state: NovelState) -> NovelState:
     validated_outline = state.validated_outline
     validated_outline.chapters.extend(chapters)
     current_volume_index = state.current_volume_index
+
     # 重置卷相关状态, 准备处理下一卷
     return {
         "validated_outline": validated_outline,
@@ -174,13 +178,14 @@ def check_outline_completion_node(state: NovelState) -> Literal["continue", "com
     """检查是否所有大纲的卷都已撰写完成"""
     total_volumes = len(state.validated_outline.master_outline)
     current_index = state.current_volume_index
-    
+           
     if current_index < total_volumes:
         state.attempt = 0
         logger.info("接受此卷, 将其添加到大纲中章节列表并准备处理下一卷")
         return "continue"
     else:
         logger.info("接受此卷, 已经完成所有大纲中章节列表")
+        
         return "complete"
 
 # -------------------- 大纲 -------------------- [生成 -> 验证 -> 状态判断]
@@ -216,7 +221,8 @@ def validate_outline_node(state: NovelState) -> NovelState:
         for chapter in validated_outline.chapters:
             for char in chapter.characters_involved:
                 if char not in all_characters:
-                    raise ValueError(f"章节'{chapter.title}'中出现的角色'{char}'不在角色列表中")
+                    logger.info(f"【大纲】角色'{char}'不在角色列表[{validated_outline.characters}]中")
+                    raise ValueError(f"章节'{chapter.title}'中出现的角色'{char}'不在角色列表[{state.validated_outline.characters}]中")
         
         if len(outline_data['chapters']) < OutlineConfig.min_chapters:
             raise ValueError(f"章节数不足，至少需要{OutlineConfig.min_chapters}个章节，实际生成了{len(outline_data.chapters)}个章节")
@@ -259,6 +265,10 @@ def check_outline_node(state: NovelState) -> Literal["success", "retry", "failur
 def generate_characters_node(state: NovelState, character_agent: CharacterAgent) -> NovelState:
     """生成详细角色档案的节点"""
     logger.info(f"正在生成角色档案(第{state.attempt + 1}次尝试)...")
+    
+    print(f"[test] 完成所有卷的撰写, 准备保存数据")
+    state.novel_storage = NovelStorage(state.validated_outline.title)
+    state.novel_storage.save_outline(state.validated_outline) 
 
     # 调用角色代理生成角色档案
     raw_characters = character_agent.generate_characters(state)
@@ -268,8 +278,11 @@ def generate_characters_node(state: NovelState, character_agent: CharacterAgent)
     if extracted_json:
         raw_characters = extracted_json
         print(f"成功提取角色列表JSON内容")
-        
+    
+    # 到生成角色档案了，大纲一定创建完成了，这时候去初始化存储器
     return {
+        "novel_storage": state.novel_storage,
+        "validated_outline":None,
         "row_characters": raw_characters,
         "attempt": state.attempt + 1
     }
@@ -291,15 +304,17 @@ def validate_characters_node(state: NovelState) -> NovelState:
                 return {"characters_validated_error": f"角色'{char_data.name}'验证失败: {str(e)}"}
         
         # 检查是否所有角色都已生成
-        outline_characters = set(state.validated_outline.characters)
+        outline_characters = set(state.novel_storage.load_outline().characters)
         generated_names = set(char.name for char in validated_characters)
         missing = outline_characters - generated_names
         if missing:
             logger.info(f"【角色档案】以下角色未生成详细档案: {', '.join(missing)}")
             return {"characters_validated_error": f"以下角色未生成详细档案: {', '.join(missing)}"}
         
+        # 虽然这种形式不好，但是目前不想大拆重改，先叠shit山吧
+        state.novel_storage.save_characters(validated_characters)
+        
         return {
-            "validated_characters": validated_characters,
             "attempt":0,
             "characters_validated_error": None
         }
@@ -313,6 +328,8 @@ def validate_characters_node(state: NovelState) -> NovelState:
                     f"错误位置附近内容:\n{context}\n"
                     "请检查括号是否匹配、是否使用双引号、逗号是否正确。")
         logger.info(f"【角色档案】角色生成JSON格式错误")
+        
+        
         return {
             "characters_validated_error": error_msg
         }
@@ -324,6 +341,7 @@ def check_characters_node(state:NovelState) -> Literal["success", "retry", "fail
     """检查角色档案结果"""
     print(f"检查角色档案验证结果...")
     if state.characters_validated_error is None:
+            
         logger.info(f"【角色档案】success:角色档案检查成功, 转移至 write_chapter 节点...")
         return "success"
     elif state.attempt < state.max_attempts:
@@ -340,7 +358,7 @@ def write_chapter_node(state: NovelState, writer_agent: WriterAgent) -> NovelSta
     # 获取当前状态中的必要信息
     revision_feedback = state.validated_evaluation
     current_index = state.current_chapter_index
-    outline = state.validated_outline
+    outline = state.novel_storage.load_outline()
       
     # 获取当前章节大纲
     chapter_outline = outline.chapters[current_index]
@@ -367,7 +385,7 @@ def validate_chapter_node(state:NovelState) -> NovelState:
     
     try:
         current_chapter_index = state.current_chapter_index
-        chapter_outline = state.validated_outline.chapters[current_chapter_index]
+        chapter_outline = state.novel_storage.load_outline().chapters[current_chapter_index]
         
         raw_current_chapter = state.raw_current_chapter
         
@@ -419,7 +437,7 @@ def check_chapter_node(state:NovelState) -> Literal["success", "retry", "failure
 def evaluate_chapter_node(state: NovelState, reflect_agent: ReflectAgent) -> NovelState:
     """评估章节质量的节点"""
     current_index = state.current_chapter_index
-    outline = state.validated_outline
+    outline = state.novel_storage.load_outline()
     # 获取当前章节大纲
     chapter_outline = outline.chapters[current_index]
     logger.info(f"正在评估第{current_index + 1}章: {chapter_outline.title}(第{state.attempt+1}次生成评估)(第{state.evaluate_attempt+1}次评估该章)")
@@ -514,16 +532,17 @@ def check_evaluation_chapter_node(state: NovelState) -> Literal["accept", "revis
 # 接受章节节点
 def accept_chapter_node(state: NovelState) -> NovelState:
     """接受章节, 将其添加到章节列表并准备处理下一章节"""
-    chapters_content = state.chapters_content
+    # chapters_content = state.chapters_content
     current_draft = state.validated_chapter_draft
     current_index = state.current_chapter_index
     
     # 将当前草稿添加到章节列表
-    chapters_content.append(current_draft)
-    
+    # chapters_content.append(current_draft)
+    state.novel_storage.save_chapter(chapter_index=current_index+1, chapter= current_draft)
+    logger.info(f"章节{current_index+1}已接受, 已添加到本地")
     # 重置章节相关状态, 准备处理下一章节
     return {
-        "chapters_content": chapters_content,
+        # "chapters_content": chapters_content,
         "current_chapter_index": current_index + 1,
         "evaluate_attempt":0,
         "validated_chapter_draft": None,
@@ -534,7 +553,7 @@ def accept_chapter_node(state: NovelState) -> NovelState:
 def check_chapter_completion_node(state: NovelState) -> Literal["continue", "complete"]:
     """检查是否所有章节都已撰写完成"""
     
-    total_chapters = len(state.validated_outline.chapters)
+    total_chapters = len(state.novel_storage.load_outline().chapters)
     current_index = state.current_chapter_index
     
     if current_index < total_chapters:
