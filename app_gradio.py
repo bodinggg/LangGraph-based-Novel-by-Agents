@@ -58,7 +58,7 @@ class NovelGeneratorUI:
         outline_str += "### 📑 章节列表:\n"
         
         for i, chapter in enumerate(outline.chapters, 1):
-            outline_str += f"**第{i}章**: {chapter.title}\n\n"
+            outline_str += f"**第{i}章**: {chapter.title.split('.')[-1]}\n\n"
             outline_str += f"  摘要: {chapter.summary}\n\n"
             outline_str += f"  关键事件: {', '.join(chapter.key_events)}\n\n"
             outline_str += f"  涉及角色: {', '.join(chapter.characters_involved)}\n\n"
