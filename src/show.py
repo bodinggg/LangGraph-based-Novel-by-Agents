@@ -47,7 +47,7 @@ def print_save(result):
             os.makedirs("./resultresult", exist_ok=True)
             filename = f"./result/{outline.title.replace(' ', '_')}.txt"
             with open(filename, 'w', encoding='utf-8') as f:
-                f.write(f"小说标题: {outline.title}\n")
+                f.write(f"小说标题: {outline.title.split('.')[-1]}\n")
                 f.write(f"类型: {outline.genre}\n")
                 f.write(f"主题: {outline.theme}\n")
                 f.write(f"背景: {outline.setting}\n\n")
@@ -72,7 +72,7 @@ def print_save(result):
             filepath = f"./result/{outline.title.replace(' ', '_')}/"
             os.makedirs(filepath, exist_ok=True)
             with open(filepath+"outline.txt", 'w', encoding='utf-8') as f:
-                f.write(f"小说标题: {outline.title}\n")
+                f.write(f"小说标题: {outline.title.split('.')[-1]}\n")
                 f.write(f"类型: {outline.genre}\n")
                 f.write(f"主题: {outline.theme}\n")
                 f.write(f"背景: {outline.setting}\n\n")
