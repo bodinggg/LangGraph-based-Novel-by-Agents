@@ -5,7 +5,7 @@ import argparse
 from src.workflow import create_workflow
 from src.show import print_save
 from src.log_config import loggers
-from src.config_loader import ModelConfig
+from src.config_loader import ModelConfig, OutlineConfig
 
 load_dotenv(override=True)
 logger = loggers['main']
@@ -25,7 +25,6 @@ def main():
     model_type = args.model_type
     if model_type == "api":
         model_name = input("请输入你的模型名字：")
-
         model_config = ModelConfig(
             api_key=api_key,
             api_url=base_url,
@@ -42,14 +41,13 @@ def main():
         app = create_workflow(model_config)
         
         user_intent = input("请输入你的小说创作意图：")
-
         logger.info(f"用户创作意图: {user_intent}")
         result = app.invoke(
             {
                 "user_intent":user_intent,
             },
             {
-                "recursion_limit": 1000  # 限制最大循环次数
+                "recursion_limit": OutlineConfig.min_chapters * 50  # 限制最大循环次数
             }
         )
         logger.info("小说生成流程完成, 准备输出结果")
