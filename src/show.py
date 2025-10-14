@@ -90,7 +90,7 @@ def print_save(result):
                     
             
             for i, chapter in enumerate(content, 1):
-                with open(filepath+"{i:02d}_{chapter.title}.txt", 'w', encoding='utf-8') as f:
+                with open(filepath+f"{i:02d}_{chapter.title}.txt", 'w', encoding='utf-8') as f:
                     f.write(f"第{i}章: {chapter.title}\n")
                     f.write(f"{chapter.content}\n\n")
                 
