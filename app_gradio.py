@@ -9,7 +9,7 @@ from src.config_loader import ModelConfig, BaseConfig
 
 def get_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--port", type=int, help="端口号", default=8000)
+    parser.add_argument("--port", type=int, help="端口号", default=7999)
     return parser.parse_args()
 
 # 初始化日志记录器
