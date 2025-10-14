@@ -38,7 +38,7 @@ def print_save(result):
             print(preview)
             
         if len(content) > 2:
-            print(f"\n... 还有 {len(result['chapters_content']) - 2} 章未显示")
+            print(f"\n... 还有 {len(result['final_content']) - 2} 章未显示")
                 
         # 提示保存选项
         print("\n" + "-" * 80)
