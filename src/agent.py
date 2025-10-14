@@ -30,17 +30,31 @@ class OutlineGeneratorAgent:
         current_volume = master_outline[volume_index]
         start_idx, end_idx = map(int, current_volume.chapters_range.split('-'))
         
+        
+        
         # 提取前卷关键信息作为上下文
         prev_context = ""
         if volume_index > 0:
             prev_volume = master_outline[volume_index - 1]
             prev_context = f"前卷《{prev_volume.title}》结局：{prev_volume.key_turning_points[-1]}\n"
-
+            last_start_idx, last_end_idx = map(int, prev_volume.chapters_range.split('-'))
+            prev_context += f"前卷《{prev_volume.title}》共{last_end_idx-last_start_idx+1}章，{prev_volume.key_turning_points[-1]}。\n"
+            
         prompt = VOLUME_OUTLINE_PROMPT.format(
-            prev_context=prev_context, current_volume=current_volume.title, start_idx=start_idx, end_idx=end_idx, num_chapter=end_idx-start_idx+1, master_outline=state.validated_outline
+            prev_context=prev_context, 
+            current_volume=current_volume.title,
+            start_idx=start_idx, end_idx=end_idx,
+            num_chapter=end_idx-start_idx+1,
+            master_outline=state.validated_outline.master_outline,
+            character_list = ', '.join(state.validated_outline.characters),
+            outline_title = state.validated_outline.title,
+            outline_genre = state.validated_outline.genre,
+            outline_theme = state.validated_outline.theme,
+            outline_setting = state.validated_outline.setting,
+            outline_plot_summary = state.validated_outline.plot_summary
         )
         if state.outline_validated_error:
-            prompt = f"之前的尝试出现错误: {state.outline_validated_error}\n请修正错误并重新生成符合格式的大纲。特别注意要用```json和```正确包裹JSON内容。\n{prompt}"
+            prompt = f"{prompt}之前的尝试{state.raw_volume_chapters}出现错误: {state.outline_validated_error}\n请修正错误并重新生成符合格式的大纲。\n"
         messages = [
             {"role":"system", "content": OUTLINE_INSTRUCT},
             {"role":"user", "content":prompt}
@@ -84,7 +98,7 @@ class CharacterAgent:
         # 从大纲中提取角色相关信息
         error_message = state.characters_validated_error
         
-        outline = state.validated_outline
+        outline = state.novel_storage.load_outline()
         characters_list = outline.characters
         
         # 提取每个角色在章节中出现的关键事件
@@ -133,9 +147,11 @@ class WriterAgent:
         """撰写单章内容"""
         
         error_message = state.current_chapter_validated_error
-        outline = state.validated_outline
+        characters = state.novel_storage.load_characters()
+        outline = state.novel_storage.load_outline()
+        
         # 调用当前章节涉及角色的角色档案
-        characters = [ c for c in state.validated_characters if c.name in outline.chapters[state.current_chapter_index].characters_involved]
+        characters = [ c for c in characters if c.name in outline.chapters[state.current_chapter_index].characters_involved]
         current_chapter_index = state.current_chapter_index
         
         
@@ -146,6 +162,7 @@ class WriterAgent:
         else:
             revision_feedback = None    
         
+        pre_chapter = state.novel_storage.load_chapter(current_chapter_index).content[-100:] if current_chapter_index > 0 else "无"
         
         # 构建上下文信息
         prompt = WRITER_PROMPT.format(
@@ -156,7 +173,7 @@ class WriterAgent:
             outline_plot_summary = outline.plot_summary,
             character_list = ', '.join(outline.characters),
             pre_summary = outline.chapters[current_chapter_index-1].summary if current_chapter_index > 0 else "无",
-            pre_context = state.chapters_content[-1].content[-100:] if current_chapter_index > 0 else "无",
+            pre_context = pre_chapter,
             post_summary = outline.chapters[current_chapter_index+1].summary if current_chapter_index < len(outline.chapters)-1 else "无",
             chapter_outline = outline.chapters[current_chapter_index],
             chapter_outline_title = outline.chapters[current_chapter_index].title,
@@ -192,7 +209,7 @@ class WriterAgent:
     def write_section(self, state:NovelState) -> str:
         """分节写作"""
         # 章节基本信息
-        outline = state.validated_outline
+        outline = state.novel_storage.load_outline()
         
         current_chapter_index = state.current_chapter_index
         chapters = outline.chapters
@@ -270,18 +287,19 @@ class WriterAgent:
 
         # 对话模板待添加
         generated_text += self.model_manager.generate(self.system_prompt+ending_prompt, self.config)
-        title = state.validated_outline.chapters[current_chapter_index].title
+        title = state.novel_storage.load_outline().chapters[current_chapter_index].title
         temp_ChapterContent = ChapterContent(title=title, content=generated_text)
         
         return str(temp_ChapterContent)
 
     
     def _get_relavant_context(self, state:NovelState, chapter_id:int) -> str:
-        
+        outline = state.novel_storage.load_outline()
         # 角色档案
         relevant_chars = []
-        for char in state.validated_characters:
-            if char.name in state.validated_outline.chapters[chapter_id].characters_involved:
+        characters = state.novel_storage.load_characters()
+        for char in characters:
+            if char.name in state.novel_storage.load_outline().chapters[chapter_id].characters_involved:
                 # 简化的角色信息减少token
                 char_summary = f"角色：{char.name}\n性格：{char.personality}\n"
                 char_summary += f"目标：{', '.join(char.goals)}\n"
@@ -289,10 +307,12 @@ class WriterAgent:
         relevant_chars = '\n'.join(relevant_chars)
         context = f"""相关角色信息：{relevant_chars}"""
         
+        pre_chapter = state.novel_storage.load_chapter(chapter_id).content[-100:]
+        
         # 利用大纲生成的摘要信息当前文信息
         if chapter_id > 0:
-            context += f"前一章（{state.validated_outline.chapters[chapter_id-1].title}） 摘要：{state.validated_outline.chapters[chapter_id-1].summary}"
-            context += f"前一章最后的内容为：...{state.chapters_content[-1].content[-100:]}"
+            context += f"前一章（{outline.chapters[chapter_id-1].title}） 摘要：{outline.chapters[chapter_id-1].summary}"
+            context += f"前一章最后的内容为：...{pre_chapter}"
         
         return context
 
@@ -307,11 +327,11 @@ class ReflectAgent:
     def evaluate_chapter(self, state: NovelState) -> str:
         """评估章节质量并提供反馈"""
         error_message = state.evaluation_validated_error
-        
+        outline = state.novel_storage.load_outline()
         current_chapter_index = state.current_chapter_index
         chapter_content = state.validated_chapter_draft
-        chapter_outline = state.validated_outline.chapters[current_chapter_index]
-        characters = state.validated_characters
+        chapter_outline = outline.chapters[current_chapter_index]
+        characters = state.novel_storage.load_characters()
          
         involved_chars = [char for char in characters 
                          if char.name in chapter_outline.characters_involved]
