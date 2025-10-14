@@ -4,3 +4,4 @@ langchain_huggingface
 transformers
 nvitop
 gradio
+openai
