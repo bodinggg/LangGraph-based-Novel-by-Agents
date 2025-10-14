@@ -93,11 +93,12 @@ def create_workflow(model_config: ModelConfig, Agent_config: BaseConfig= None) -
     # 接受本章
     workflow.add_node("accpet_chapter", accept_chapter_node)
     
+    
     workflow.add_node("success", lambda state: {
         "result": "小说创作流程完成",
-        "final_outline": state.validated_outline,
-        "final_characters":state.validated_characters,
-        "final_content": state.chapters_content
+        "final_outline": state.novel_storage.load_outline(),
+        "final_characters":state.novel_storage.load_characters(),
+        "final_content": state.novel_storage.load_all_chapters()
     })
     
     workflow.add_node("failure", lambda state: {
