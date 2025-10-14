@@ -55,7 +55,7 @@ def validate_master_outline_node(state: NovelState) -> NovelState:
     except json.JSONDecodeError as e:
         # 提供更详细的错误位置信息
         
-        error_lines = state.raw_outline.split('\n')
+        error_lines = state.raw_master_outline.split('\n')
         error_line = min(e.lineno - 1, len(error_lines) - 1) if e.lineno else 0
         context = "\n".join(error_lines[max(0, error_line - 2):min(len(error_lines), error_line + 3)])
         
@@ -87,6 +87,7 @@ def check_master_outline_node(state: NovelState) -> Literal["success", "retry", 
         
 # -------------------- 大纲(分章) -------------------- [生成 -> 验证 -> 状态判断]   
 def generate_volume_outline_node(state:NovelState, outline_agent:OutlineGeneratorAgent) -> NovelState:
+    logger.info(f"开始分章生成卷{state.current_volume_index+1}小说大纲(第{state.attempt + 1}次尝试)")
     volume_index = state.current_volume_index
     raw_chapters = outline_agent.generate_volume_chapters(state, volume_index)
     extracted_json = extract_json(raw_chapters)
@@ -99,6 +100,7 @@ def generate_volume_outline_node(state:NovelState, outline_agent:OutlineGenerato
     }
 
 def validate_volume_outline_node(state:NovelState) -> NovelState:
+    logger.info(f"开始分章验证卷{state.current_volume_index+1}小说大纲(第{state.attempt + 1}次尝试)")
     try:
         volume_index = state.current_volume_index
         volume_data = json.loads(state.raw_volume_chapters)
@@ -125,7 +127,7 @@ def validate_volume_outline_node(state:NovelState) -> NovelState:
         }
     except json.JSONDecodeError as e:
         # 提供更详细的错误位置信息
-        error_lines = state.raw_outline.split('\n')
+        error_lines = state.raw_volume_chapters.split('\n')
         error_line = min(e.lineno - 1, len(error_lines) - 1) if e.lineno else 0
         context = "\n".join(error_lines[max(0, error_line - 2):min(len(error_lines), error_line + 3)])
         
@@ -139,7 +141,7 @@ def validate_volume_outline_node(state:NovelState) -> NovelState:
 
 def check_volume_outline_node(state: NovelState) -> Literal["success", "retry", "failure"]:
     """检查大纲验证结果"""
-    print(f"检查大纲分章验证结果...")
+    logger.info(f"检查分章卷{state.current_volume_index+1}验证结果...")
     if state.outline_validated_error is None:
         logger.info(f"【分章，卷{state.current_volume_index+1}】success:大纲检查成功, 转移至 accept_outline 节点")
         return "success"
@@ -165,7 +167,6 @@ def accept_outline_node(state: NovelState) -> NovelState:
     validated_outline = state.validated_outline
     validated_outline.chapters.extend(chapters)
     current_volume_index = state.current_volume_index
-
     # 重置卷相关状态, 准备处理下一卷
     return {
         "validated_outline": validated_outline,
