@@ -408,7 +408,7 @@ def validate_chapter_node(state:NovelState) -> NovelState:
             "current_chapter_validated_error": None
         }
     except json.JSONDecodeError as e:
-        error_lines = state.raw_outline.split('\n')
+        error_lines = state.raw_current_chapter.split('\n')
         error_line = min(e.lineno - 1, len(error_lines) - 1) if e.lineno else 0
         context = "\n".join(error_lines[max(0, error_line - 2):min(len(error_lines), error_line + 3)])
         
