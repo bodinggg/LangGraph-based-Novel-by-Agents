@@ -112,7 +112,7 @@ def validate_volume_outline_node(state:NovelState) -> NovelState:
         
         # 检查角色一致性
         all_characters = set(state.validated_outline.characters)
-        for chapter in state.validated_outline.chapters:
+        for chapter in chapters:
             for char in chapter.characters_involved:
                 if char not in all_characters:
                     logger.info(f"【分章】角色'{char}'不在角色列表[{state.validated_outline.characters}]中")
