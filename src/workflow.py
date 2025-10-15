@@ -3,7 +3,13 @@
 """
 from typing import Dict
 from langgraph.graph import StateGraph, END
-from src.agent import OutlineGeneratorAgent, CharacterAgent, WriterAgent, ReflectAgent 
+from src.agent import (
+    OutlineGeneratorAgent,
+    CharacterAgent,
+    WriterAgent,
+    ReflectAgent,
+    EntityAgent,
+) 
 from src.node import *
 from src.state import NovelState
 from src.log_config import loggers
@@ -13,6 +19,7 @@ from src.config_loader import (
     CharacterConfig,
     WriterConfig,
     ReflectConfig,
+    EntityConfig,
     BaseConfig,
     ModelConfig
 )
@@ -46,6 +53,7 @@ def create_workflow(model_config: ModelConfig, Agent_config: BaseConfig= None) -
     character_agent = CharacterAgent(model_manager, CharacterConfig)         # 角色
     writer_agent = WriterAgent(model_manager, WriterConfig)               # 写作
     reflect_agent = ReflectAgent(model_manager, ReflectConfig)             # 反思
+    entity_agent = EntityAgent(model_manager, EntityConfig)                 # 实体识别
     
     logger.info("代理初始化完成, 开始构建工作流图...")
     
@@ -82,6 +90,11 @@ def create_workflow(model_config: ModelConfig, Agent_config: BaseConfig= None) -
     workflow.add_node("write_chapter",
                       lambda state: write_chapter_node(state, writer_agent))
     workflow.add_node("validate_chapter", validate_chapter_node)
+    
+    # 新增：实体识别
+    workflow.add_node("generate_entities",
+                      lambda state: generate_entities_node(state, entity_agent))
+    workflow.add_node("validate_entities", validate_entities_node)
     
     # 评估
     workflow.add_node("evaluate_chapter",
@@ -195,9 +208,21 @@ def create_workflow(model_config: ModelConfig, Agent_config: BaseConfig= None) -
         "evaluate2wirte",
         check_evaluation_chapter_node,
         {
-            "accept":"accpet_chapter",
+            "accept":"generate_entities",   # 验证通过，执行实体分析
             "revise":"write_chapter",
             "force_accpet":"accpet_chapter"
+        }
+    )
+    
+    # 新增：实体识别
+    workflow.add_edge("generate_entities", "validate_entities")
+    workflow.add_conditional_edges(
+        "validate_entities",
+        check_entities_node,
+        {
+            "success": "accpet_chapter",    # 实体识别成功，接受章节
+            "retry": "generate_entities",
+            "failure": "failure"
         }
     )
     
