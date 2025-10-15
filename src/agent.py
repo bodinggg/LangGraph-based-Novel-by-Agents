@@ -167,6 +167,7 @@ class WriterAgent:
             revision_feedback = None    
         
         pre_chapter = state.novel_storage.load_chapter(current_chapter_index).content[-100:] if current_chapter_index > 0 else "无"
+        pre_entity = state.novel_storage.load_entity(current_chapter_index-1) if current_chapter_index > 0 else None
         
         # 构建上下文信息
         prompt = WRITER_PROMPT.format(
@@ -188,6 +189,7 @@ class WriterAgent:
             current_chapter_idx = current_chapter_index,
             num_chapters = len(outline.chapters),
             word_count = 3000,
+            pre_entity = pre_entity
         )
         # 错误信息与修改意见放在最后
         if error_message:
@@ -372,7 +374,7 @@ class ReflectAgent:
         
         return self.model_manager.generate(messages, self.config)
 
-# 实体代理 - 用于控制情节发展
+# 世界代理 - 用于控制情节发展
 class EntityAgent:
     def __init__(self, model_manager: ModelManager, config: BaseConfig):
         self.model_manager = model_manager
