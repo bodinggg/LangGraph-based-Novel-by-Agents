@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
-from typing import Optional, List
-from src.model import NovelOutline, Character, ChapterContent
+from typing import Optional, List, Dict, Any
+from src.model import NovelOutline, Character, ChapterContent, EntityContent
 
 class NovelStorage:
     def __init__(self, novel_title: str):
@@ -11,6 +11,8 @@ class NovelStorage:
         self.chapter_dir_json = self.base_dir / "chapters_json"
         self.chapter_dir_json.mkdir(exist_ok=True)
         self.chapter_dir.mkdir(exist_ok=True)
+        self.entity_dir = self.base_dir / "entities"
+        self.entity_dir.mkdir(exist_ok=True)
 
 
     # 大纲存储
@@ -68,3 +70,15 @@ class NovelStorage:
                 chapters.append(chapter_content)
         return chapters
 
+    def save_entity(self, chapter_index: int, entity_data: EntityContent):
+        with open(self.entity_dir / f"{chapter_index}_entity.json", "w", encoding="utf-8") as f:
+            json.dump(entity_data.model_dump(), f, ensure_ascii=False, indent=2)
+
+    def load_entity(self, chapter_index: int ) -> Optional[EntityContent]:
+        try:
+            with open(self.entity_dir / f"{chapter_index}_entity.json", "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return EntityContent(**data)
+        
+        except FileNotFoundError:
+            return None
