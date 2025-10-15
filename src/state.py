@@ -55,7 +55,17 @@ class NovelState(BaseModel):
     validated_evaluation : Optional[QualityEvaluation] = None
     evaluation_validated_error: Optional[str] = None
     
+    # 实体生成控制
+    raw_entities: Optional[str] = None
+    entities_validated_error: Optional[str] = None
     	
+    # 结果
+    result: Optional[str] = None
+    final_outline: Optional[NovelOutline] = None
+    final_characters: Optional[List[Character]] = None
+    final_content: Optional[List[ChapterContent]] = None
+    final_error: Optional[str] = None
+    
     model_config = ConfigDict(arbitrary_types_allowed=True)
     
     
