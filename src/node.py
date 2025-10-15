@@ -1,12 +1,21 @@
 import json
 from typing import Literal
 
-from src.model import *
+from src.model import (
+    Character,
+    ChapterOutline,
+    VolumeOutline,  
+    NovelOutline,
+    ChapterContent,
+    QualityEvaluation,
+    EntityContent,
+)
 from src.agent import (
     OutlineGeneratorAgent,
     WriterAgent,
     CharacterAgent,
-    ReflectAgent
+    ReflectAgent,
+    EntityAgent,
 ) 
 from src.tool import extract_json
 from src.state import NovelState
@@ -321,7 +330,7 @@ def validate_characters_node(state: NovelState) -> NovelState:
         }
         
     except json.JSONDecodeError as e:
-        error_lines = state.raw_outline.split('\n')
+        error_lines = state.row_characters.split('\n')
         error_line = min(e.lineno - 1, len(error_lines) - 1) if e.lineno else 0
         context = "\n".join(error_lines[max(0, error_line - 2):min(len(error_lines), error_line + 3)])
         
@@ -529,21 +538,78 @@ def check_evaluation_chapter_node(state: NovelState) -> Literal["accept", "revis
         logger.info(f"达到验证的最大次数, 强制接受本章")
         return "force_accpet"
 
+# ---------------------- 实体识别 ---------------------- [生成 -> 验证 -> 状态判断]
+def generate_entities_node(state: NovelState, entity_agent: EntityAgent) -> NovelState:
+    """生成实体列表的节点"""
+    logger.info(f"正在生成实体列表(第{state.attempt + 1}次尝试)...")
+    raw_entities = entity_agent.generate_entities(state)
+    # 提取并解析JSON
+    extracted_json = extract_json(raw_entities)
+    if extracted_json:
+        raw_entities = extracted_json
+        print("【实体识别】成功提取大纲JSON内容")
 
+    
+    return {
+        "attempt": state.attempt + 1,
+        "raw_entities": raw_entities
+    }
+
+def validate_entities_node(state: NovelState) -> NovelState:
+    """验证实体列表格式"""
+    logger.info("正在验证实体列表格式...")
+    try:
+        entities_data = json.loads(state.raw_entities)
+        entities = EntityContent(**entities_data)
+        
+        logger.info(f"第{state.current_chapter_index + 1}章实体加载完成")
+        # 存储实体文件到对应章节
+        state.novel_storage.save_entity(state.current_chapter_index,entities)
+        return {
+            "attempt": 0,
+            "entities_validated_error": None
+        }
+    except json.JSONDecodeError as e:
+        error_lines = state.raw_entities.split('\n')
+        error_line = min(e.lineno - 1, len(error_lines) - 1) if e.lineno else 0
+        context = "\n".join(error_lines[max(0, error_line - 2):min(len(error_lines), error_line + 3)])
+        
+        error_msg = (f"JSON解析错误: 在第{e.lineno}行, 第{e.colno}列 - {str(e)}\n"
+                    f"错误位置附近内容:\n{context}\n"
+                    "请检查括号是否匹配、是否使用双引号、逗号是否正确。")
+        logger.info(f"【实体识别】生成JSON格式错误")
+        return {
+            "entities_validated_error": error_msg
+        }
+    except Exception as e:
+        logger.info(f"【实体识别】实体生成失败: {str(e)}")
+        return {
+            "entities_validated_error": f"实体生成失败: {str(e)}"
+        }
+
+def check_entities_node(state: NovelState) -> Literal["success", "retry", "failure"]:
+    """检查实体列表生成结果"""
+    if state.entities_validated_error is None:
+        logger.info(f"【实体识别】success:实体列表生成成功, 转移至 write_entities 节点...")
+        return "success"
+    elif state.attempt < state.max_attempts:
+        logger.info(f"【实体识别】retry:实体列表生成失败,  重新生成实体列表...")
+        return "retry"
+    else:
+        logger.info(f"【实体识别】failure:实体列表生成失败, 达到最大重试次数, 结束流程")
+        return "failure"
+    
 # 接受章节节点
 def accept_chapter_node(state: NovelState) -> NovelState:
     """接受章节, 将其添加到章节列表并准备处理下一章节"""
-    # chapters_content = state.chapters_content
     current_draft = state.validated_chapter_draft
     current_index = state.current_chapter_index
     
-    # 将当前草稿添加到章节列表
-    # chapters_content.append(current_draft)
+
     state.novel_storage.save_chapter(chapter_index=current_index+1, chapter= current_draft)
     logger.info(f"章节{current_index+1}已接受, 已添加到本地")
     # 重置章节相关状态, 准备处理下一章节
     return {
-        # "chapters_content": chapters_content,
         "current_chapter_index": current_index + 1,
         "evaluate_attempt":0,
         "validated_chapter_draft": None,
