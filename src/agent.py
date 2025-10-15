@@ -1,9 +1,13 @@
+from typing import Dict, Any, List
+import json
 
 from src.prompt import *
 from src.state import NovelState
 from src.model import ChapterContent
 from src.model_manager import ModelManager
 from src.config_loader import BaseConfig
+
+
 
 # 大纲代理 - 用于生成统领大纲
 class OutlineGeneratorAgent:
@@ -367,3 +371,31 @@ class ReflectAgent:
         ]
         
         return self.model_manager.generate(messages, self.config)
+
+# 世界代理 - 用于控制情节发展
+class EntityAgent:
+    def __init__(self, model_manager: ModelManager, config: BaseConfig):
+        self.model_manager = model_manager
+        self.config = config
+        self.system_prompt = WORLD_SYS_PROMPT
+        
+    def generate_entities(self, state: NovelState) :
+        """根据章节内容添加动态实体信息，帮助维护情节一致性"""
+ 
+        text_content = state.validated_chapter_draft.content
+        chapter_name = state.validated_chapter_draft.title
+        
+        messages = [
+            {
+                "role":"system",
+                "content":self.system_prompt
+            },
+            {
+                "role":"user",
+                "content":WORLD_USER_PROMPT.format(chapter_name=chapter_name, text_content=text_content)
+            }
+        ]
+        
+        return self.model_manager.generate(messages, self.config)
+    
+    
