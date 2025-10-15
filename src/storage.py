@@ -59,3 +59,12 @@ class NovelStorage:
         except FileNotFoundError:
             return None
 
+    def load_all_chapters(self) -> List[ChapterContent]:
+        chapters = []
+        for chapter_path in self.chapter_dir.glob("*.txt"):
+            chapter_index = int(chapter_path.stem.split("_")[0])
+            chapter_content = self.load_chapter(chapter_index)
+            if chapter_content is not None:
+                chapters.append(chapter_content)
+        return chapters
+
