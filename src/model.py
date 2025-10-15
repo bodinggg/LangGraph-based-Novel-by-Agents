@@ -1,6 +1,6 @@
 
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Any
 
 # 定义角色数据模型，继承BaseModel实现数据验证功能
 class Character(BaseModel):
@@ -54,3 +54,11 @@ class QualityEvaluation(BaseModel):
     passes: bool  # 章节质量是否达标（True为达标，False为不达标）
     length_check: bool  # 章节长度是否符合要求（True为符合，False为不符合）
     
+
+class EntityContent(BaseModel):
+    """当前章节实体信息"""
+    characters : Any    # 角色相关内容
+    organizations : Any # 组织相关内容 
+    locations : Any     # 地点相关内容
+    events : Any        # 事件相关内容
+    entities: Any       # 其他实体相关内容  
