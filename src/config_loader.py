@@ -32,7 +32,8 @@ class ConfigLoader:
         self.character_config = BaseConfig(**self.config_data["character_config"])
         self.writer_config = BaseConfig(** self.config_data["writer_config"])
         self.reflect_config = BaseConfig(**self.config_data["reflect_config"])
-    
+        self.entity_config = BaseConfig(** self.config_data["entity_config"])
+        
     def _load_config(self) -> Dict[str, Any]:
         """加载并解析YAML配置文件"""
         if not self.config_path.exists():
@@ -53,3 +54,4 @@ WriterConfig = config.writer_config
 
 ReflectConfig = config.reflect_config
 
+EntityConfig = config.entity_config
