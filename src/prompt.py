@@ -1,220 +1,242 @@
 """
-
+定义工作状态, 核心部分
 """
-MASTER_OUTLINE_PROMPT = """你是小说大纲创建专家，能直接生成符合格式的结构化总纲。
+from typing import Dict
+from langgraph.graph import StateGraph, END
+from src.agent import (
+    OutlineGeneratorAgent,
+    CharacterAgent,
+    WriterAgent,
+    ReflectAgent,
+    EntityAgent,
+) 
+from src.node import *
+from src.state import NovelState
+from src.log_config import loggers
+from src.model_manager import LocalModelManager, APIModelManager
+from src.config_loader import (
+    OutlineConfig,
+    CharacterConfig,
+    WriterConfig,
+    ReflectConfig,
+    EntityConfig,
+    BaseConfig,
+    ModelConfig
+)
 
-## 任务
-基于用户需求"{user_intent}"，生成包含至少{min_chapters}个章节的小说总纲，划分{volume}个卷册，确保逻辑连贯且形成完整故事弧线。
+logger = loggers['workflow']
 
-## 核心要素
-1. 基础信息：标题（简洁有力）、类型（明确）、主题（15字内）、背景（50字内）、情节概要（100字内）
-2. 卷册划分：每卷含合理章节数（标注chapters_range如"1-25"），总章节≥{min_chapters}
-3. 卷册细节：每卷需含标题、主题（10字内）、3个关键转折点（每点15字内，推动主线）
-4. 角色列表：列出3-5个核心角色（仅名称，与情节匹配）
-
-## 输出格式
-仅用```json和```包裹JSON内容，无任何额外文字，格式如下：{{
-  "title": "小说标题",
-  "genre": "类型",
-  "theme": "核心主题",
-  "setting": "故事背景",
-  "plot_summary": "情节概要",
-  "master_outline": [
-    {{"title": "卷1标题", "chapters_range": "1-25", "theme": "卷主题", "key_turning_points": ["转折1", "转折2", "转折3"]}},
-    ...
-  ],
-  "characters": ["角色1", "角色2", ...]
-}}严格遵循字段长度限制，直接输出符合要求的JSON！
-"""
-
-OUTLINE_INSTRUCT = """你是小说大纲创建专家，擅长遵循指示生成结构化内容。"""
-
-
-# 对于严格要求长度的，给上标题序号，模型更好理解——》不加可能重试10次也没改变
-VOLUME_OUTLINE_PROMPT = """
-## 核心依据
-1. 整体设定：小说标题: {outline_title}；类型: {outline_genre}；主题:{outline_theme}；背景: {outline_setting}；情节概要: {outline_plot_summary} 
-   总纲：{master_outline}
-2. 前卷末尾：{prev_context}
-3. 生成《{current_volume}》（第{start_idx}-{end_idx}章）的章节大纲。
-
-## 章节核心要素
-1. 标题：格式为"1.章节标题"（如"1.暗舱的秘密"），简洁点题
-2. 摘要：30-50字，含起因+关键行动+初步结果
-3. 关键事件：1-2个（每事件≤20字），必须推动主线剧情
-4. 涉及角色：≤3人，仅列名称，角色名称必须在列表【{character_list}】中
-5. 场景：格式为"地点·时间"（如"飞船暗舱·星历302年"）
-6. 需包含卷内3个关键转折点（对应总纲，在章节中明确体现）
-7. 确保章节数量一定为{num_chapter}, 生成的数组个数一定为{num_chapter}
-
-## 输出格式
-仅用```json和```包裹内容，无任何额外文字，确保共{num_chapter}个章节：{{
-    "chapters": [
-        {{
-            "title": "1.章节标题（如“1.雨夜的来信”）",  // 第{start_idx}-{end_idx}章的章节标题
-            "summary": "30-50字的章节核心内容",   // 含起因+关键行动+初步结果
-            "key_events": ["推动主线的关键行动"], // 必须推动主线剧情
-            "characters_involved": ["角色1"], //必须在【{character_list}】中选择
-            "setting": "地点·时间"
-        }}
-    ]
-}}严格遵循字段长度与格式要求，确保章节编号连续！
-"""
-
-OUTLINE_PROMPT = """你是小说大纲创建专家，仅专注于按指令生成结构化、无多余内容的小说大纲JSON。
-
-## 核心任务
-1. 针对用户需求{user_intent}分析，可适当扩展
-2. 基础信息：标题（简洁有力）、类型（明确）、主题（15字内）、背景（50字内）、情节概要（100字内）,角色（人名）列表
-
-### 章节核心要素
-1. 标题：格式为"小标题"（如"暗舱的秘密"），简洁点题
-2. 摘要：30-50字，含起因+关键行动+初步结果
-3. 关键事件：1-2个（每事件≤20字），必须推动主线剧情
-4. 涉及角色：≤3人，仅列名称（人名，与核心任务中提到的角色一致）
-5. 场景：格式为"地点·时间"（如"飞船暗舱·星历302年"）
-6. 需包含卷内3个关键转折点（对应总纲，在章节中明确体现）
-
-## 输出格式强制规则
-1. 仅用```json和```包裹最终JSON内容，无其他前缀或后缀。
-2. JSON必须包含以下所有字段，不可缺失或自定义字段名：{{
-  "title": "小说标题",
-  "genre": "类型",
-  "theme": "主题",
-  "setting": "背景",
-  "plot_summary": "情节概要", chapters
-  "chapters": [
-    {{
-      "title": "章节标题（如“雨夜的来信”）",
-      "summary": "30-50字的章节核心内容",
-      "key_events": ["推动主线的关键行动"],
-      "characters_involved": ["人名1", "人名2"],
-      "setting": "场景"
-    }},
-    // ... 确保至少有{min_chapters}个章节
-  ],
-  "characters": ["人名1", 人名2"],
-}}
-"""
-
-CHARACTER_PROMPT = """你是角色发展专家，负责将角色名称和概要发展为丰富、复杂的角色档案。
-
-## 核心依据
-1. 大纲内容：小说标题: {outline_title}；类型: {outline_genre}；背景: {outline_setting}；情节概要: {outline_plot_summary}
-2. 角色事件：{context}
-
-## 核心任务
-1. 角色名称：角色名称必须是【{character_list}】中的一个
-2. 详细背景：角色的成长经历、教育背景、重要人生事件等
-3. 性格特点：正面和负面特质，行为模式，说话方式等
-4. 内外目标：角色明确想要的东西（外部）和深层需求（内部）
-5. 冲突(内部和外部)：与其他角色的冲突（外部）和内心挣扎（内部）
-6. 角色在故事中的成长弧线：从开始到结束的变化和发展
-
-创造真实、有缺陷且立体的角色。请为每个角色生成独立的档案，并用```json和```包裹JSON数组，如下所示：[
-    {{
-        "name": "角色名称",
-        "background": "详细背景",
-        "personality": "性格特点",
-        "goals": ["目标1", "目标2"],
-        "conflicts": ["冲突1", "冲突2"],
-        "arc": "角色成长弧线"
-    }}
-]
-只输出JSON内容，不要添加其他解释或说明。
-"""
-
-# 对于专业的撰写Prompt，需要提供详细的信息基础上，让模型有更好地阅读体验，增强其感受与写作能力。
-WRITER_PROMPT = """你是专注于【{genre}】类型的，专业的小说章节撰写人。请严格依据以下信息，创作符合整体架构的完整章节:
-
-## 核心依据
-1. 大纲内容：小说标题【{outline_title}】, 类型【{genre}】, 主题【{outline_theme}】, 背景【{outline_setting}】, 情节概要【{outline_plot_summary}】, 角色【{character_list}】, 前文内容【{pre_summary}】:...{pre_context}, 后文内容【{post_summary}】
-2. 章节锚点：严格遵循【{chapter_outline}】信息 —— 标题必须与 {chapter_outline_title} 一致；所有 {{chapter_outline_key_events}} 需逐点展开（每个事件需包含 {{chapter_outline_setting}} 中的时间 / 地点细节、角色互动过程）；内容需覆盖 {{chapter_outline_summary}}的核心情节，不偏离大纲框架。
-2. 角色驱动：依据【{character}】塑造角色行为 —— 每个 {{character_name}} 的对话需贴合 {{character_personality}}（如内敛角色少言但精准，冲动角色语言带情绪词）；行动需呼应 {{character_background}}（如军旅背景角色的肢体习惯）；在情节中体现 {{character_conflicts}}（内心矛盾用心理描写呈现，外部对抗设计具体冲突场景）；同时为 {{character_arc}} 铺垫成长线索（如从逃避到面对的微小行为转变）。
-3. 整体契合：内容需考虑前后文内容；隐含 {outline_theme} 的核心表达（如 "人性善恶" 可通过角色选择体现）。
-
-## 创作要求
-1. 仅需要重点考虑核心内容（"content"字段），不要输出思考过程。
-1. 内容密度：总字数需达 {word_count} 字符以上，情节丰富且细节适当。
-2. 风格适配：采用 {genre} 类型的典型风格（如悬疑类用短句 + 环境烘托紧张感，爱情类侧重情绪细节刻画，科幻类注重技术场景具象化）。
-3. 节奏控制：根据当前章节号{current_chapter_idx}与总的章节数目{num_chapters}控制节奏，需符合 {genre} 类型的节奏要求。
-4. 剧情发展：保持适当节奏，推进情节与角色发展。
-5. 创作技巧：创作技巧需掌握，如对话技巧、角色塑造技巧、情节组织技巧、情节推进技巧、语言技巧等。
-6. 创作尾声：自然，以情节结束，不表达对后续内容的展望，但是可以通过具体内容体现伏笔。
-
-## 输出格式
-请用```json和```包裹JSON内容，确保符合以下结构:
-{{
-  "title": "章节标题（与大纲一致）",
-  "content": "多段落完整内容，需覆盖上述所有写作要求，确保这部分内容不少于{word_count}字符",
-  "notes": 本章具体推进点以及后续可衔接的延伸方向（可选）"
-}}
-只输出JSON内容，不要添加其他解释或说明。
-"""
-
-WRITER_SECTION_PROMPT = """你是专业的小说章节撰写人。根据章节大纲、角色信息和小说上下文，写出小说章节中的一部分：
-- 情节丰富且细节充分
-- 遵循大纲
-- 保持角色声音一致性
-- 包含生动描写和场景细节
-- 平衡对话、动作和描述
-- 推进情节和角色发展
-- 保持适当节奏
-
-请确保内容足够丰富，长度至少达到2000字符。
-使用适合类型的引人入胜的文学风格。
-
-## 输出格式
-
-
-"""
-
-REFLECT_PROMPT = """你是专业小说编辑。审阅提供的章节并提供详细反馈:
-- 总体质量评分(1-10)
-- 写作优点
-- 需要改进的地方
-- 具体建议
-- 修改内容(如需大幅修改)
-
-专注于改善散文质量、角色一致性、节奏、对话和叙事吸引力。
-提供有实质性、建设性的反馈。
-
-## 评估标准
-1. 内容质量：情节是否完整，是否符合大纲要求
-2. 角色表现：角色行为是否符合其设定，对话是否自然
-3. 写作风格：描写是否生动，语言是否流畅，是否符合小说类型
-4. 结构节奏：章节结构是否合理，节奏是否恰当
-5. 长度检查：内容是否足够丰富（至少3000字符）
-
-
-## 输出格式
-请用```json和```包裹JSON内容，确保符合以下结构:
-{
-  "score": 评分(1-10),
-  "feedback": "不足之处，并提出改进建议",
-  "passes": 是否通过评审(true/false),
-  "length_check": 长度是否达标(true/false)
-}
-只输出JSON内容，不要添加其他解释或说明。
-        """
-        
-WORLD_SYS_PROMPT = """你是专注于小说实体识别的专家，需要从文本中提取关键实体并建立详细档案。
-请按照以下类别提取实体，每个类别包含对应实体的详细属性：
-- characters（角色）：包含姓名、别名、身份、性格、外貌、关键经历、与其他实体的关系等
-- organizations（组织）：包含名称、类型、成立背景、目标、关键成员等
-- locations（地点）：包含名称、特征、位置、重要性等
-- events（事件）：包含名称、时间、地点、参与方、起因、结果等
-- entities（其他实体）：包含名称、定义、特点、相关概念等其他类型实体
+# 构建工作流
+def create_workflow(model_config: ModelConfig, Agent_config: BaseConfig= None) -> StateGraph:
+    """创建包含章节写作和质量评审的完整工作流"""
+    # 获取共享模型实例和分词器
+    model_type = model_config.model_type
     
-请严格按照以下JSON格式输出，确保字段匹配：
-{
-    "characters": {"实体名称": {"属性1": "值1", "属性2": "值2", ..., "source": "章节名"}},
-    "organizations": {"实体名称": {"属性1": "值1", ..., "source": "章节名"}},
-    "locations": {"实体名称": {"属性1": "值1", ..., "source": "章节名"}},
-    "events": {"实体名称": {"属性1": "值1", ..., "source": "章节名"}},
-    "entities": {"实体名称": {"属性1": "值1", ..., "source": "章节名"}}
-}
-注意：只输出JSON内容，不要添加任何额外解释或说明文字。
-"""
-
-WORLD_USER_PROMPT = """请识别这篇文章中的实体（来自章节：{chapter_name}）：\n{text_content}"""
+    if model_type == "local":
+        model_manager = LocalModelManager(model_config.model_path)
+    elif model_type == "api":
+        model_manager = APIModelManager(
+            model_config.api_url,
+            model_config.api_key,
+            model_name=model_config.model_name,
+            max_retries=model_config.max_retries,
+            retry_delay=model_config.retry_delay
+        )
+    logger.info(f"成功加载{model_type}模型管理器")
+    # 允许改变config值
+    if Agent_config is not None:
+        OutlineConfig.min_chapters = Agent_config.min_chapters
+        OutlineConfig.volume = Agent_config.volume
+        OutlineConfig.master_outline = Agent_config.master_outline
+    # 初始化 Agent
+    outline_agent = OutlineGeneratorAgent(model_manager, OutlineConfig)    # 大纲
+    character_agent = CharacterAgent(model_manager, CharacterConfig)         # 角色
+    writer_agent = WriterAgent(model_manager, WriterConfig)               # 写作
+    reflect_agent = ReflectAgent(model_manager, ReflectConfig)             # 反思
+    entity_agent = EntityAgent(model_manager, EntityConfig)                 # 实体识别
+    
+    logger.info("代理初始化完成, 开始构建工作流图...")
+    
+    # 创建图
+    workflow = StateGraph(NovelState)
+    # -------------------- 创建节点 --------------------
+    if OutlineConfig.master_outline:
+        # 分卷
+        workflow.add_node("generate_master_outline",
+                        lambda state: generate_master_outline_node(state, outline_agent))
+        workflow.add_node("validate_master_outline", validate_master_outline_node)
+        
+        # 分章
+        workflow.add_node("generate_volume_outline", 
+                        lambda state: generate_volume_outline_node(state, outline_agent))
+        workflow.add_node("validate_volume_outline", validate_volume_outline_node)
+        
+        # 合并
+        workflow.add_node("accpet_outline", accept_outline_node)
+        workflow.add_node("volume2character", volume2character)
+    else:
+        # 大纲
+        workflow.add_node("generate_outline", 
+                        lambda state: generate_outline_node(state, outline_agent))
+        workflow.add_node("validate_outline", validate_outline_node)
+        
+    
+    # 角色
+    workflow.add_node("generate_characters", 
+                     lambda state: generate_characters_node(state, character_agent))
+    workflow.add_node("validate_characters",validate_characters_node)
+    
+    # 写作
+    workflow.add_node("write_chapter",
+                      lambda state: write_chapter_node(state, writer_agent))
+    workflow.add_node("validate_chapter", validate_chapter_node)
+    
+    # 新增：实体识别
+    workflow.add_node("generate_entities",
+                      lambda state: generate_entities_node(state, entity_agent))
+    workflow.add_node("validate_entities", validate_entities_node)
+    
+    # 评估
+    workflow.add_node("evaluate_chapter",
+                      lambda state: evaluate_chapter_node(state, reflect_agent))
+    workflow.add_node("validate_evaluate", validate_evaluate_node)
+    
+    workflow.add_node("evaluate2wirte", evaluation_to_chapter_node)
+    
+    # 接受本章
+    workflow.add_node("accpet_chapter", accept_chapter_node)
+    
+    
+    workflow.add_node("success", lambda state: {
+        "result": "小说创作流程完成",
+        "final_outline": state.novel_storage.load_outline(),
+        "final_characters":state.novel_storage.load_characters(),
+        "final_content": state.novel_storage.load_all_chapters()
+    })
+    
+    workflow.add_node("failure", lambda state: {
+        "result": "生成失败", 
+        "final_error": state.outline_validated_error or state.characters_validated_error or state.current_chapter_validated_error or state.evaluation_validated_error
+    })
+    
+    
+    # -------------------- 创建边 --------------------
+    # 大纲(原逻辑保留)
+    
+    if OutlineConfig.master_outline:
+        workflow.set_entry_point("generate_master_outline")
+        workflow.add_edge("generate_master_outline", "validate_master_outline")
+        workflow.add_conditional_edges(
+            "validate_master_outline",
+            check_master_outline_node,
+            {
+                "success": "generate_volume_outline",
+                "retry": "generate_master_outline",
+                "failure": "failure"
+            }
+        )
+        workflow.add_edge("generate_volume_outline", "validate_volume_outline")
+        workflow.add_conditional_edges(
+            "validate_volume_outline",
+            check_volume_outline_node,
+            {
+                "success": "volume2character",
+                "retry": "generate_volume_outline",
+                "failure": "failure"
+            }
+        )
+        workflow.add_edge("volume2character", "accpet_outline")
+        workflow.add_conditional_edges(
+            "accpet_outline",
+            check_outline_completion_node,
+            {
+                "complete":"generate_characters",
+                "continue":"generate_volume_outline"
+            }
+        )
+        
+    else:
+        workflow.set_entry_point("generate_outline")
+        workflow.add_edge("generate_outline", "validate_outline")
+        workflow.add_conditional_edges(
+            "validate_outline",
+            check_outline_node,
+            {
+                "success": "generate_characters",
+                "retry": "generate_outline",
+                "failure": "failure"
+            }
+        )
+    
+    # 角色档案
+    workflow.add_edge("generate_characters", "validate_characters")
+    workflow.add_conditional_edges(
+        "validate_characters",
+        check_characters_node,
+        {
+            "success": "write_chapter",
+            "retry": "generate_characters",
+            "failure": "failure"
+        }
+    )
+    
+    # 写作
+    workflow.add_edge("write_chapter", "validate_chapter")
+    workflow.add_conditional_edges(
+        "validate_chapter",
+        check_chapter_node,
+        {
+            "success": "evaluate_chapter",
+            "retry": "write_chapter",
+            "failure": "failure"
+        }
+    )
+    
+    
+    # 评估
+    workflow.add_edge("evaluate_chapter", "validate_evaluate")
+    workflow.add_conditional_edges(
+        "validate_evaluate",
+        check_evaluation_node,
+        {
+            "success": "evaluate2wirte",
+            "retry": "evaluate_chapter",
+            "failure":"failure"
+        }
+    )
+    workflow.add_conditional_edges(
+        "evaluate2wirte",
+        check_evaluation_chapter_node,
+        {
+            "accept":"generate_entities",   # 验证通过，执行实体分析
+            "revise":"write_chapter",
+            "force_accpet":"accpet_chapter"
+        }
+    )
+    
+    # 新增：实体识别
+    workflow.add_edge("generate_entities", "validate_entities")
+    workflow.add_conditional_edges(
+        "validate_entities",
+        check_entities_node,
+        {
+            "success": "accpet_chapter",    # 实体识别成功，接受章节
+            "retry": "generate_entities",
+            "failure": "failure"
+        }
+    )
+    
+    workflow.add_conditional_edges(
+        "accpet_chapter",
+        check_chapter_completion_node,
+        {
+            "complete":"success",
+            "continue":"write_chapter"
+        }
+    )
+    
+    workflow.add_edge("success", END)
+    workflow.add_edge("failure", END)
+    logger.info("工作流图创建完成, 开始编译!")
+    # 编译图
+    return workflow.compile()
