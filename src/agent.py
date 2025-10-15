@@ -372,7 +372,7 @@ class ReflectAgent:
         
         return self.model_manager.generate(messages, self.config)
 
-# 世界代理 - 用于控制情节发展
+# 实体代理 - 用于控制情节发展
 class EntityAgent:
     def __init__(self, model_manager: ModelManager, config: BaseConfig):
         self.model_manager = model_manager
