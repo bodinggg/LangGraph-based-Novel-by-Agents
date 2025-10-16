@@ -5,3 +5,4 @@ transformers
 nvitop
 gradio
 openai
+dotenv
