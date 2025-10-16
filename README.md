@@ -60,19 +60,20 @@ pip install -r requirements.txt
    - 修改`app.py`中的`model_path`为你的模型路径
 
 ## 使用方法
-
 1. 启动应用
 
 ```bash
 python app.py --model-type api or local
 ```
+如果是使用api方式的话，记得填写.env文件。
 ```bash
 python app_gradip.py --port 7999
 ```
 
-1. 输入创作意图
+2. 输入创作意图
 
 ```plaintext
+请输入你的模型名字：** （选择api方式需要填）
 请输入你的小说创作意图：例如"科幻"
 ```
 
