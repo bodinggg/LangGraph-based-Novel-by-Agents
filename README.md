@@ -67,7 +67,7 @@ python app.py --model-type api or local
 ```
 如果是使用api方式的话，记得填写.env文件。
 ```bash
-python app_gradip.py --port 7999
+python app_gradio.py --port 7999
 ```
 
 2. 输入创作意图
