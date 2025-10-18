@@ -156,4 +156,5 @@ class WriterConfig:
 
 ## 流程图
 既然能看到最后，那这个流程图也会有耐心看的（我猜）
-![workflow display](assets/workflow_graph.png)
+![workflow display](assets/graph_master.png)
+![workflow_display](assets/graph.png)
