@@ -2,9 +2,10 @@ import gradio as gr
 import os
 import argparse
 from datetime import datetime
+from typing import List
 from src.workflow import create_workflow
 from src.log_config import loggers
-from src.model import NovelOutline
+from src.model import NovelOutline, Character
 from src.config_loader import ModelConfig, BaseConfig
 
 def get_args():
@@ -65,7 +66,7 @@ class NovelGeneratorUI:
             
         return outline_str
 
-    def _format_characters(self, characters):
+    def _format_characters(self, characters: List[Character]):
         """将角色列表格式化为Markdown字符串"""
         if not characters:
             return "尚未生成角色档案"
@@ -195,7 +196,7 @@ class NovelGeneratorUI:
                     final_state = state_dict
                     
                     status = self.__update_status(f"🔍 执行节点: {node}")
-                    
+
                     if state_dict.get('validated_outline'):
                         self.validated_outline = state_dict['validated_outline']
                         outline_box = self._format_outline(self.validated_outline, master_outline)
@@ -204,22 +205,14 @@ class NovelGeneratorUI:
                         self.validated_characters = state_dict['validated_characters']
                         characters_box = self._format_characters(self.validated_characters)
                     
-                    if state_dict.get('chapters_content'):
-                        self.all_chapters = state_dict['chapters_content']
-                        chapter_selector = self._update_chapter_selection(self.all_chapters)
-                        chapter_box = self._format_chapter(
-                            self.all_chapters[-1], 
-                            len(self.all_chapters)-1
-                        )
-                    elif state_dict.get('validated_chapter_draft'):
+                    if state_dict.get('validated_chapter_draft'):
                         current_index = state_dict.get('current_chapter_index', 0)
                         chapter_box = self._format_chapter(
                             state_dict['validated_chapter_draft'], 
                             current_index
                         )
-                        if len(self.all_chapters) <= current_index:
-                            self.all_chapters.insert(current_index, state_dict['validated_chapter_draft'])
-                            chapter_selector = self._update_chapter_selection(self.all_chapters)
+                        self.all_chapters.append(state_dict['validated_chapter_draft'])
+                        chapter_selector = self._update_chapter_selection(self.all_chapters)
                     
                     if state_dict.get('validated_evaluation'):
                         evaluation_box = self._format_evaluation(state_dict['validated_evaluation'])
