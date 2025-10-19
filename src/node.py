@@ -275,8 +275,7 @@ def check_outline_node(state: NovelState) -> Literal["success", "retry", "failur
 def generate_characters_node(state: NovelState, character_agent: CharacterAgent) -> NovelState:
     """生成详细角色档案的节点"""
     logger.info(f"正在生成角色档案(第{state.attempt + 1}次尝试)...")
-    
-    print(f"[test] 完成所有卷的撰写, 准备保存数据")
+
     state.novel_storage = NovelStorage(state.validated_outline.title)
     state.novel_storage.save_outline(state.validated_outline) 
 
@@ -325,6 +324,7 @@ def validate_characters_node(state: NovelState) -> NovelState:
         state.novel_storage.save_characters(validated_characters)
         
         return {
+            "validated_characters": validated_characters,
             "attempt":0,
             "characters_validated_error": None
         }
