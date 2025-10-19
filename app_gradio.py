@@ -31,6 +31,7 @@ class NovelGeneratorUI:
         # 从环境变量加载默认API配置
         self.default_api_key = os.getenv("API_KEY", "")
         self.default_base_url = os.getenv("BASE_URL", "")
+        self.last_chapter_index = -1  # 上一次选择的章节索引
 
     def __update_status(self, message):
         """更新状态信息并记录日志"""
@@ -189,12 +190,11 @@ class NovelGeneratorUI:
             final_state = None
             for step in self.workflow.stream(
                 {"user_intent": user_intent},
-                {"recursion_limit": 1000}
+                {"recursion_limit": 1000000}
             ):
                 for node, state_dict in step.items():
                     self.current_state = state_dict
                     final_state = state_dict
-                    
                     status = self.__update_status(f"🔍 执行节点: {node}")
 
                     if state_dict.get('validated_outline'):
@@ -211,9 +211,13 @@ class NovelGeneratorUI:
                             state_dict['validated_chapter_draft'], 
                             current_index
                         )
-                        self.all_chapters.append(state_dict['validated_chapter_draft'])
-                        chapter_selector = self._update_chapter_selection(self.all_chapters)
-                    
+                        if self.last_chapter_index == current_index:
+                            self.all_chapters[-1] = state_dict['validated_chapter_draft']
+                        
+                        elif len(self.all_chapters) <= current_index:
+                            self.all_chapters.append(state_dict['validated_chapter_draft'])
+                            chapter_selector = self._update_chapter_selection(self.all_chapters)
+                        self.last_chapter_index = current_index
                     if state_dict.get('validated_evaluation'):
                         evaluation_box = self._format_evaluation(state_dict['validated_evaluation'])
                     
