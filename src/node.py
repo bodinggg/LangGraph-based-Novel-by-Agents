@@ -413,6 +413,7 @@ def validate_chapter_node(state:NovelState) -> NovelState:
         # 存储当前章节草稿, 等待评审
         return {
             "validated_chapter_draft": chapter_content,
+            "current_chapter_index":current_chapter_index,
             "attempt":0,
             "current_chapter_validated_error": None
         }
