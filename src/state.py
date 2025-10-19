@@ -40,6 +40,7 @@ class NovelState(BaseModel):
     
     # 角色档案生成控制
     row_characters : Optional[str] = None
+    validated_characters: Optional[List[Character]] = None
     characters_validated_error: Optional[str] = None
 
     
