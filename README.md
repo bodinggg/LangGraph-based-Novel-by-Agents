@@ -20,6 +20,8 @@
   
 
 ## 略大一些更新の日志
+2025-10-21：  针对Reflect Agent进一步优化，处理多种反馈情况，并适配不同模板
+
 2025-10-15：  基于LLM的实体识别，对每章内容提取关键结构化信息展示。具体可见生成后的./result/*_storage/entities/*_entity.json。
 
 2025-10-13：  添加了持久化记忆，防止超长文章时的OOM。直接save and load，后续进一步分析出结构再用SQL
@@ -112,7 +114,9 @@ my_novel/
    ├── state.py             # 全局状态管理，存储创作过程中的所有数据
    ├── storage.py           # 持久化到本地
    ├── prompt.py            # 各Agent的提示词模板
-   ├── config_loader.py            # 生成参数配置（长度、温度等）
+   ├── enhanced_prompt.py   # 评估反馈分支提示词模板
+   ├── feedback_processor.py# 对于反馈不同的分支处理
+   ├── config_loader.py     # 生成参数配置（长度、温度等）
    ├── log_config.py        # 配置log文件
    └── tool.py              # 工具函数（如JSON提取）
    ```
