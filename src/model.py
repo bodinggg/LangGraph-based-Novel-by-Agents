@@ -1,6 +1,6 @@
 
 from pydantic import BaseModel
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Literal
 
 # 定义角色数据模型，继承BaseModel实现数据验证功能
 class Character(BaseModel):
@@ -47,12 +47,29 @@ class ChapterContent(BaseModel):
     content: str            # 章节的具体文本内容
     notes: str = ""  # 可选的章节注释，用于记录写作思路或后续修改建议（默认值为空字符串）
 
-# 新增：章节质量评估模型，用于量化和描述章节内容的质量
+# 结构化反馈项模型
+class FeedbackItem(BaseModel):
+    category: Literal['plot', 'character', 'style', 'dialogue', 'pacing', 'description', 'logic']  # 反馈类别：plot/character/style/dialogue/pacing/description/logic
+    priority: str                   # 优先级：high/medium/low
+    issue: str                      # 具体问题描述
+    suggestion: str                 # 改进建议
+    location: Optional[str] = None  # 问题位置（段落或句子描述）
+
+# 章节质量评估模型，用于量化和描述章节内容的质量
 class QualityEvaluation(BaseModel):
-    score: int  # 章节质量评分（范围1-10分）
-    feedback: str           # 针对章节质量的具体反馈意见
-    passes: bool  # 章节质量是否达标（True为达标，False为不达标）
-    length_check: bool  # 章节长度是否符合要求（True为符合，False为不符合）
+    score: int              # 章节质量评分（范围1-10分）
+    passes: bool            # 章节质量是否达标（True为达标，False为不达标）
+    length_check: bool      # 章节长度是否符合要求（True为符合，False为不符合）
+    
+    # 结构化反馈内容
+    feedback_items: List[FeedbackItem] = []  # 具体的反馈项列表
+    overall_feedback: str = ""               # 整体评价总结
+    
+    # 各维度评分（用于更细粒度的评估）
+    plot_score: Optional[int] = None         # 情节评分（1-10）
+    character_score: Optional[int] = None    # 角色评分（1-10）
+    style_score: Optional[int] = None        # 文笔评分（1-10）
+    pacing_score: Optional[int] = None       # 节奏评分（1-10）
     
 
 class EntityContent(BaseModel):
@@ -61,4 +78,4 @@ class EntityContent(BaseModel):
     organizations : Any # 组织相关内容 
     locations : Any     # 地点相关内容
     events : Any        # 事件相关内容
-    entities: Any       # 其他实体相关内容  
+    entities: Any       # 其他实体相关内容
