@@ -2,6 +2,8 @@ from typing import Dict, Any, List
 import json
 
 from src.prompt import *
+from src.enhanced_prompts import get_prompt_template
+from src.feedback_processor import FeedbackProcessor, ContentReferencer
 from src.state import NovelState
 from src.model import ChapterContent
 from src.model_manager import ModelManager
@@ -146,181 +148,173 @@ class WriterAgent:
     def __init__(self, model_manager: ModelManager, config: BaseConfig):
         self.model_manager = model_manager
         self.config = config
+        # 初始化反馈处理器
+        self.feedback_processor = FeedbackProcessor(max_feedback_tokens=800)
+        self.content_referencer = ContentReferencer()
     
     def write_chapter(self, state: NovelState) -> str:
-        """撰写单章内容"""
+        """撰写单章内容，增强反馈处理"""
         
         error_message = state.current_chapter_validated_error
         characters = state.novel_storage.load_characters()
         outline = state.novel_storage.load_outline()
         
         # 调用当前章节涉及角色的角色档案
-        characters = [ c for c in characters if c.name in outline.chapters[state.current_chapter_index].characters_involved]
+        characters = [c for c in characters if c.name in outline.chapters[state.current_chapter_index].characters_involved]
         current_chapter_index = state.current_chapter_index
         
+        # 获取评估反馈
+        evaluation = state.validated_evaluation
+        current_content = state.validated_chapter_draft
         
-        quality = state.validated_evaluation
-        if quality:
-            print(f"[test] quality:\n{quality}")
-            revision_feedback = quality.feedback
+        # 处理反馈（如果存在）
+        processed_feedback = None
+        if evaluation and not evaluation.passes:
+            processed_feedback = self.feedback_processor.process_evaluation(
+                evaluation, 
+                current_content, 
+                state.evaluate_attempt
+            )
+        
+        # 根据反馈确定写作策略
+        strategy = "maintain_current"  # 默认策略
+        if processed_feedback:
+            strategy = processed_feedback.revision_strategy
+        
+        # 获取对应的提示词模板
+        prompt_template = get_prompt_template(strategy)
+        
+        # 准备基础参数
+        base_params = self._prepare_base_params(state, characters, outline, current_chapter_index)
+        
+        # 根据策略生成提示词
+        if strategy == "maintain_current" or not processed_feedback:
+            prompt = self._generate_base_prompt(prompt_template, base_params, error_message)
         else:
-            revision_feedback = None    
+            prompt = self._generate_revision_prompt(
+                prompt_template, base_params, processed_feedback, current_content
+            )
+        messages = [{"role": "user", "content": prompt}]
         
+        return self.model_manager.generate(messages, self.config)
+
+        
+    
+    def _prepare_base_params(self, state: NovelState, characters: List, outline, current_chapter_index: int) -> Dict:
+        """准备基础参数，简化promt注入变量逻辑"""
         pre_chapter = state.novel_storage.load_chapter(current_chapter_index).content[-100:] if current_chapter_index > 0 else "无"
         pre_entity = state.novel_storage.load_entity(current_chapter_index-1) if current_chapter_index > 0 else None
         
-        # 构建上下文信息
-        prompt = WRITER_PROMPT.format(
-            genre=outline.genre,
-            outline_setting=outline.setting,
-            outline_title=outline.title,
-            outline_theme = outline.theme,
-            outline_plot_summary = outline.plot_summary,
-            character_list = ', '.join(outline.characters),
-            pre_summary = outline.chapters[current_chapter_index-1].summary if current_chapter_index > 0 else "无",
-            pre_context = pre_chapter,
-            post_summary = outline.chapters[current_chapter_index+1].summary if current_chapter_index < len(outline.chapters)-1 else "无",
-            chapter_outline = outline.chapters[current_chapter_index],
-            chapter_outline_title = outline.chapters[current_chapter_index].title,
-            chapter_outline_key_events = ', '.join(outline.chapters[current_chapter_index].key_events),
-            chapter_outline_setting = outline.chapters[current_chapter_index].setting,
-            chapter_outline_summary = outline.chapters[current_chapter_index].summary,
-            character = characters,
-            current_chapter_idx = current_chapter_index,
-            num_chapters = len(outline.chapters),
-            word_count = 3000,
-            pre_entity = pre_entity
-        )
-        # 错误信息与修改意见放在最后
-        if error_message:
-            prompt += error_message
-        if revision_feedback:
-            prompt += f"\n\n修改意见: {revision_feedback}"
-
-        messages = [
-            {
-                "role":"user",
-                "content":prompt
-            }
-        ]
+        return {
+            "genre": outline.genre,
+            "outline_setting": outline.setting,
+            "outline_title": outline.title,
+            "outline_theme": outline.theme,
+            "outline_plot_summary": outline.plot_summary,
+            "character_list": ', '.join(outline.characters),
+            "pre_summary": outline.chapters[current_chapter_index-1].summary if current_chapter_index > 0 else "无",
+            "pre_context": pre_chapter,
+            "post_summary": outline.chapters[current_chapter_index+1].summary if current_chapter_index < len(outline.chapters)-1 else "无",
+            "chapter_outline_title": outline.chapters[current_chapter_index].title,
+            "chapter_outline_key_events": ', '.join(outline.chapters[current_chapter_index].key_events),
+            "chapter_outline_setting": outline.chapters[current_chapter_index].setting,
+            "chapter_outline_summary": outline.chapters[current_chapter_index].summary,
+            "character": characters,
+            "current_chapter_idx": current_chapter_index,
+            "num_chapters": len(outline.chapters),
+            "word_count": 3000,
+            "pre_entity": pre_entity
+        }
+    
+    def _generate_base_prompt(self, template: str, params: Dict, error_message: str = None) -> str:
+        """生成基础写作提示词"""
+        prompt = template.format(**params)
         
-        return self.model_manager.generate(messages, self.config)
+        if error_message:
+            prompt += f"\n\n错误信息: {error_message}"
+            
+        return prompt
+    
+    def _generate_revision_prompt(self, template: str, params: Dict, 
+                                processed_feedback, current_content) -> str:
+        """生成修改版提示词"""
+        
+        # 根据策略添加特定参数
+        revision_params = params.copy()
+        
+        if processed_feedback.revision_strategy == "targeted_revision":
+            revision_params.update({
+                "original_title": current_content.title,
+                "original_content": current_content.content[:2000],  # 限制长度
+                "feedback_summary": processed_feedback.summary,
+                "key_improvements": self._format_key_improvements(processed_feedback.evaluation.feedback_items),
+                "revision_strategy": processed_feedback.revision_strategy
+            })
+        elif processed_feedback.revision_strategy == "expand_content":
+            revision_params.update({
+                "original_title": current_content.title,
+                "original_content": current_content.content[:1500],
+                "current_length": len(current_content.content),
+                "expansion_needed": max(0, 3000 - len(current_content.content)),
+                "expansion_strategy": "丰富细节描写，增加角色互动，扩展情节发展"
+            })
+        elif processed_feedback.revision_strategy == "character_focused":
+            revision_params.update({
+                "original_content": current_content.content[:2000],
+                "character_feedback": self._extract_character_feedback(processed_feedback.evaluation.feedback_items),
+                "character_profiles": self._format_character_profiles(params["character"])
+            })
+        elif processed_feedback.revision_strategy == "plot_focused":
+            revision_params.update({
+                "original_content": current_content.content[:2000],
+                "plot_feedback": self._extract_plot_feedback(processed_feedback.evaluation.feedback_items)
+            })
+        elif processed_feedback.revision_strategy == "comprehensive_rewrite":
+            revision_params.update({
+                "feedback_history": self._format_feedback_history(processed_feedback)
+            })
+        
+        return template.format(**revision_params)
+    
+    def _format_key_improvements(self, feedback_items: List) -> str:
+        """格式化关键改进点"""
+        improvements = []
+        for i, item in enumerate(feedback_items[:3], 1):  # 最多3个
+            improvements.append(f"{i}. {item.issue} - 建议：{item.suggestion}")
+        return "\n".join(improvements)
+    
+    def _extract_character_feedback(self, feedback_items: List) -> str:
+        """提取角色相关反馈"""
+        character_issues = [item for item in feedback_items 
+                          if item.category == "character"]
+        if character_issues:
+            return "; ".join([item.suggestion for item in character_issues[:2]])
+        return "角色表现需要改进"
+    
+    def _extract_plot_feedback(self, feedback_items: List) -> str:
+        """提取情节相关反馈"""
+        plot_issues = [item for item in feedback_items 
+                      if item.category == "plot"]
+        if plot_issues:
+            return "; ".join([item.suggestion for item in plot_issues[:2]])
+        return "情节逻辑需要改进"
+    
+    def _format_character_profiles(self, characters: List) -> str:
+        """格式化角色档案"""
+        profiles = []
+        for char in characters[:3]:  # 最多3个角色
+            profiles.append(f"角色：{char.name}\n性格：{char.personality}\n目标：{', '.join(char.goals[:2])}")
+        return "\n\n".join(profiles)
+    
+    def _format_feedback_history(self, processed_feedback) -> str:
+        """格式化反馈历史"""
+        return f"主要问题：{processed_feedback.summary}\n关键改进点：{self._format_key_improvements(processed_feedback.evaluation.feedback_items)}"
 
     def _write_expansion(self, state: NovelState) -> str:
         """扩写"""
         pass
 
-
     
-    def write_section(self, state:NovelState) -> str:
-        """分节写作"""
-        # 章节基本信息
-        outline = state.novel_storage.load_outline()
-        
-        current_chapter_index = state.current_chapter_index
-        chapters = outline.chapters
-        chapter_outline = chapters[current_chapter_index]
-        
-        context = self._get_relavant_context(state, current_chapter_index)
-        base_info = f"""
-        第{current_chapter_index}章: {chapter_outline.title}
-        章节摘要: {chapter_outline.summary}
-        关键事件: {', '.join(chapter_outline.key_events)}
-        场景: {chapter_outline.setting}
-        涉及角色: {', '.join(chapter_outline.characters_involved)}
-        """
-        #  分三部分写作：开头、中间、结尾
-        generated_text = ""
-        
-        # 1. 开头部分 (约1500字)
-        opening_prompt = f"""
-        {context}
-
-        {base_info}
-
-        请撰写这一章的开头部分, 包括：
-        - 场景描述
-        - 引入主要人物
-        - 设定章节基调
-        - 引出本章主要事件的开端
-
-        确保内容生动、细节丰富, 字数不少于2000字。
-        
-        直接生成小说内容！
-        """
-        
-        # 对话模板待添加
-        generated_text += self.model_manager.generate(self.system_prompt+opening_prompt, self.config)
-
-        # 2. 中间部分 (约1500-2000字)
-        # 提供前文作为上下文
-        middle_prompt = f"""
-        {base_info}
-
-        本章开头部分内容：
-        ...{generated_text[-500:]}  
-
-        请继续撰写本章的中间部分, 包括：
-        - 发展章节的主要冲突和事件
-        - 展示角色互动
-        - 推进情节发展
-        - 增加情节紧张度或复杂性
-
-        确保内容生动、细节丰富, 字数不少于2000字, 衔接流畅。
-        
-        直接生成小说内容！
-        """
-        
-        # 对话模板待添加
-        generated_text += self.model_manager.generate(self.system_prompt+middle_prompt, self.config)
-        # 3. 结尾部分 (约1500字)
-        ending_prompt = f"""
-        {base_info}
-
-        本章前文内容摘要：
-        ...{generated_text[-500:]} 
-
-        请完成本章的结尾部分, 包括：
-        - 解决或推进本章的主要冲突
-        - 展示角色的反应和情感变化
-        - 为下一章埋下伏笔
-        - 以合适的钩子结束本章
-
-        确保内容生动、细节丰富, 字数不少于2000字, 与前文无缝衔接。
-        
-        直接生成小说内容！
-        """
-
-        # 对话模板待添加
-        generated_text += self.model_manager.generate(self.system_prompt+ending_prompt, self.config)
-        title = state.novel_storage.load_outline().chapters[current_chapter_index].title
-        temp_ChapterContent = ChapterContent(title=title, content=generated_text)
-        
-        return str(temp_ChapterContent)
-
-    
-    def _get_relavant_context(self, state:NovelState, chapter_id:int) -> str:
-        outline = state.novel_storage.load_outline()
-        # 角色档案
-        relevant_chars = []
-        characters = state.novel_storage.load_characters()
-        for char in characters:
-            if char.name in state.novel_storage.load_outline().chapters[chapter_id].characters_involved:
-                # 简化的角色信息减少token
-                char_summary = f"角色：{char.name}\n性格：{char.personality}\n"
-                char_summary += f"目标：{', '.join(char.goals)}\n"
-                relevant_chars.append(char_summary)
-        relevant_chars = '\n'.join(relevant_chars)
-        context = f"""相关角色信息：{relevant_chars}"""
-        
-        pre_chapter = state.novel_storage.load_chapter(chapter_id).content[-100:]
-        
-        # 利用大纲生成的摘要信息当前文信息
-        if chapter_id > 0:
-            context += f"前一章（{outline.chapters[chapter_id-1].title}） 摘要：{outline.chapters[chapter_id-1].summary}"
-            context += f"前一章最后的内容为：...{pre_chapter}"
-        
-        return context
 
 # 反思代理 - 用于评审章节质量
 class ReflectAgent:
@@ -374,7 +368,7 @@ class ReflectAgent:
         
         return self.model_manager.generate(messages, self.config)
 
-# 世界代理 - 用于控制情节发展
+# 实体代理 - 用于控制情节发展
 class EntityAgent:
     def __init__(self, model_manager: ModelManager, config: BaseConfig):
         self.model_manager = model_manager
@@ -399,5 +393,3 @@ class EntityAgent:
         ]
         
         return self.model_manager.generate(messages, self.config)
-    
-    
