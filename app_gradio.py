@@ -104,7 +104,8 @@ class NovelGeneratorUI:
         eval_str += f"**长度检查**: {length_check}\n\n"
         eval_str += f"**通过状态**: {'✅ 已通过' if evaluation.passes else '❌ 未通过'}\n\n"
         eval_str += "### 反馈建议\n"
-        eval_str += evaluation.feedback
+        eval_str += evaluation.overall_feedback
+        
         
         return eval_str
 
