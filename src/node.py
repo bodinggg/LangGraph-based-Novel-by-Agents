@@ -479,7 +479,7 @@ def validate_evaluate_node(state:NovelState) -> NovelState:
         # 输出评估结果摘要
         logger.info(f"第{current_index + 1}章评估结果: 评分 {evaluation.score}/10, {'通过' if evaluation.passes else '未通过'}")
         if not evaluation.passes:
-            logger.info(f"主要问题: {evaluation.feedback}")
+            logger.info(f"主要问题: {evaluation.overall_feedback}")
         
         return {
             "validated_evaluation" : evaluation,
