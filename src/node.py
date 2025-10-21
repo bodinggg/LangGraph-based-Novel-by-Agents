@@ -177,7 +177,13 @@ def accept_outline_node(state: NovelState) -> NovelState:
     validated_outline.chapters.extend(chapters)
     current_volume_index = state.current_volume_index
     # 重置卷相关状态, 准备处理下一卷
+    if current_volume_index == len(validated_outline.master_outline) - 1:
+        state.novel_storage = NovelStorage(state.validated_outline.title)
+        state.novel_storage.save_outline(state.validated_outline)
+        
+    
     return {
+        "novel_storage": state.novel_storage,
         "validated_outline": validated_outline,
         "current_volume_index": current_volume_index + 1,
         "raw_volume_chapters": None
@@ -194,6 +200,7 @@ def check_outline_completion_node(state: NovelState) -> Literal["continue", "com
         logger.info("接受此卷, 将其添加到大纲中章节列表并准备处理下一卷")
         return "continue"
     else:
+        
         logger.info("接受此卷, 已经完成所有大纲中章节列表")
         
         return "complete"
@@ -204,7 +211,7 @@ def generate_outline_node(state: NovelState, outline_agent: OutlineGeneratorAgen
     logger.info(f"开始生成小说大纲(第{state.attempt + 1}次尝试)")
     
     raw_outline = outline_agent.generate_outline(state)
-    
+
     # 尝试提取JSON部分
     extracted_json = extract_json(raw_outline)
     if extracted_json:
@@ -236,8 +243,10 @@ def validate_outline_node(state: NovelState) -> NovelState:
         
         if len(outline_data['chapters']) < OutlineConfig.min_chapters:
             raise ValueError(f"章节数不足，至少需要{OutlineConfig.min_chapters}个章节，实际生成了{len(outline_data.chapters)}个章节")
-        
+        state.novel_storage = NovelStorage(validated_outline.title)
+        state.novel_storage.save_outline(validated_outline) 
         return {
+            "novel_storage": state.novel_storage,
             "validated_outline": validated_outline,
             "attempt":0,
             "outline_validated_error": None
@@ -276,8 +285,7 @@ def generate_characters_node(state: NovelState, character_agent: CharacterAgent)
     """生成详细角色档案的节点"""
     logger.info(f"正在生成角色档案(第{state.attempt + 1}次尝试)...")
 
-    state.novel_storage = NovelStorage(state.validated_outline.title)
-    state.novel_storage.save_outline(state.validated_outline) 
+    
 
     # 调用角色代理生成角色档案
     raw_characters = character_agent.generate_characters(state)
@@ -290,7 +298,6 @@ def generate_characters_node(state: NovelState, character_agent: CharacterAgent)
     
     # 到生成角色档案了，大纲一定创建完成了，这时候去初始化存储器
     return {
-        "novel_storage": state.novel_storage,
         "validated_outline":None,
         "row_characters": raw_characters,
         "attempt": state.attempt + 1
