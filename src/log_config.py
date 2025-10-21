@@ -29,7 +29,7 @@ def setup_logging():
     )
     
     # 为不同模块创建专用日志器
-    modules = ['workflow', 'node', 'main', 'gradio']
+    modules = ['workflow', 'node', 'main', 'gradio','feedback']
     loggers = {module: logging.getLogger(module) for module in modules}
     
     return loggers
