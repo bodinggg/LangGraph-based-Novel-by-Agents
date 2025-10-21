@@ -41,8 +41,8 @@
 python app_gradio.py --port 7999
 ```
 ## 示例（您仅仅需要输入意图，模型帮你考虑一切）
-![Gradio前端界面（2025-10-09更新）](assets/outline_2.png)
-
+![Gradio前端界面](assets/graph_human_outline_init.png)
+![](assets/graph_human_outline.png)
 ## 安装指南
 
 ### 依赖环境
