@@ -3,6 +3,9 @@ import os
 import argparse
 from datetime import datetime
 from typing import List
+from dotenv import load_dotenv
+import json
+
 from src.workflow import create_workflow
 from src.log_config import loggers
 from src.model import NovelOutline, Character
@@ -13,6 +16,12 @@ def get_args():
     parser.add_argument("--port", type=int, help="端口号", default=7999)
     return parser.parse_args()
 
+load_dotenv(override=True)
+api_key = os.getenv("API_KEY")
+base_url = os.getenv("BASE_URL")
+
+
+load_dotenv(override=True)
 # 初始化日志记录器
 logger = loggers['gradio']
 
@@ -29,9 +38,12 @@ class NovelGeneratorUI:
         self.validated_characters = None  # 已验证的角色列表
         self.final_result = None  # 最终生成结果
         # 从环境变量加载默认API配置
-        self.default_api_key = os.getenv("API_KEY", "")
-        self.default_base_url = os.getenv("BASE_URL", "")
+        self.default_api_key = api_key
+        self.default_base_url = base_url 
         self.last_chapter_index = -1  # 上一次选择的章节索引
+        # 交互式工作流控制变量
+        self.workflow_iterator = None  # 工作流迭代器
+        self.step_approved = None  # 步骤批准状态标志
 
     def __update_status(self, message):
         """更新状态信息并记录日志"""
@@ -140,9 +152,393 @@ class NovelGeneratorUI:
                 gr.update(visible=True)   # 本地模型设置面板
             )
 
+    # def _load_outline(self, outline_file):
+    #     """加载小说大纲文件"""
+    #     try:
+    #         with open(outline_file, "r", encoding="utf-8") as f:
+    #             outline_str = f.read()
+    #         outline = NovelOutline(**json.loads(outline_str))
+    #         return outline
+    #     except Exception as e:
+    #         return f"加载小说大纲文件失败: {e}"
+        
+    def _save_outline(self, edited_outline_text, status_box):
+        """保存编辑后的小说大纲到storage目录"""
+        if not self.validated_outline:
+            error_msg = "❌ 保存失败：请先生成小说大纲"
+            return error_msg, self.__update_status(error_msg), gr.update()
+        
+        try:
+            # 使用NovelStorage保存大纲
+            from src.storage import NovelStorage
+            
+            # 如果用户编辑了大纲文本，需要解析并更新
+            if edited_outline_text and edited_outline_text.strip():
+                updated_outline = self._parse_edited_outline(edited_outline_text)
+                if updated_outline:
+                    self.validated_outline = updated_outline
+            
+            # 创建存储实例（使用更新后的标题）
+            storage = NovelStorage(self.validated_outline.title)
+            
+            # 保存大纲到storage目录
+            storage.save_outline(self.validated_outline)
+            
+            # 格式化更新后的大纲用于前端显示
+            updated_outline_display = self._format_outline(self.validated_outline, master_outline=True)
+            
+            success_msg = f"✅ 大纲保存成功！保存路径：{storage.base_dir / 'outline.json'}"
+            logger.info(success_msg)
+            return success_msg, self.__update_status(success_msg), updated_outline_display
+            
+        except Exception as e:
+            error_msg = f"❌ 保存大纲失败：{str(e)}"
+            logger.error(error_msg)
+            return error_msg, self.__update_status(error_msg), gr.update()
+
+    def _approve_current_step(self):
+        """批准当前步骤，继续执行工作流"""
+        if not hasattr(self, 'workflow_iterator') or self.workflow_iterator is None:
+            return "❌ 没有正在执行的工作流", gr.update(visible=False), gr.update(visible=False)
+        
+        try:
+            # 设置批准标志
+            self.step_approved = True
+            return "✅ 已批准当前步骤，继续执行...", gr.update(visible=False), gr.update(visible=False)
+        except Exception as e:
+            error_msg = f"❌ 批准步骤失败：{str(e)}"
+            logger.error(error_msg)
+            return error_msg, gr.update(visible=False), gr.update(visible=False)
+
+    def _reject_current_step(self):
+        """拒绝当前步骤，停止工作流"""
+        if not hasattr(self, 'workflow_iterator') or self.workflow_iterator is None:
+            return "❌ 没有正在执行的工作流", gr.update(visible=False), gr.update(visible=False)
+        
+        try:
+            # 设置拒绝标志
+            self.step_approved = False
+            self.processing = False
+            self.workflow_iterator = None
+            return "❌ 已拒绝当前步骤，工作流已停止", gr.update(visible=False), gr.update(visible=False)
+        except Exception as e:
+            error_msg = f"❌ 拒绝步骤失败：{str(e)}"
+            logger.error(error_msg)
+            return error_msg, gr.update(visible=False), gr.update(visible=False)
+
+    def _parse_edited_outline(self, edited_text):
+        """解析用户编辑的大纲文本，转换为NovelOutline对象"""
+        try:
+            # 创建一个新的大纲对象，基于原始大纲
+            updated_outline = self.validated_outline.model_copy()
+            
+            lines = edited_text.strip().split('\n')
+            current_chapter = None
+            chapter_index = -1
+            
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                
+                # 解析基本信息
+                if line.startswith('标题:'):
+                    updated_outline.title = line.split(':', 1)[1].strip()
+                elif line.startswith('类型:'):
+                    updated_outline.genre = line.split(':', 1)[1].strip()
+                elif line.startswith('主题:'):
+                    updated_outline.theme = line.split(':', 1)[1].strip()
+                elif line.startswith('背景:'):
+                    updated_outline.setting = line.split(':', 1)[1].strip()
+                elif line.startswith('情节概要:'):
+                    updated_outline.plot_summary = line.split(':', 1)[1].strip()
+                elif line.startswith('主要角色:'):
+                    characters_str = line.split(':', 1)[1].strip()
+                    updated_outline.characters = [c.strip() for c in characters_str.split(',') if c.strip()]
+                
+                # 解析章节信息
+                elif line.startswith('第') and '章:' in line:
+                    # 保存上一章节
+                    if current_chapter and chapter_index >= 0:
+                        if chapter_index < len(updated_outline.chapters):
+                            updated_outline.chapters[chapter_index] = current_chapter
+                    
+                    # 开始新章节
+                    chapter_title = line.split(':', 1)[1].strip()
+                    chapter_index += 1
+                    
+                    # 获取原始章节作为模板，或创建新章节
+                    if chapter_index < len(updated_outline.chapters) and updated_outline.chapters[chapter_index]:
+                        current_chapter = updated_outline.chapters[chapter_index].model_copy()
+                        current_chapter.title = chapter_title
+                    else:
+                        # 创建新章节（使用默认值）
+                        from src.model import ChapterOutline
+                        current_chapter = ChapterOutline(
+                            title=chapter_title,
+                            summary="",
+                            key_events=[],
+                            characters_involved=[],
+                            setting=""
+                        )
+                
+                elif current_chapter:
+                    # 解析章节详细信息
+                    if line.startswith('摘要:'):
+                        current_chapter.summary = line.split(':', 1)[1].strip()
+                    elif line.startswith('关键事件:'):
+                        events_str = line.split(':', 1)[1].strip()
+                        current_chapter.key_events = [e.strip() for e in events_str.split(',') if e.strip()]
+                    elif line.startswith('涉及角色:'):
+                        chars_str = line.split(':', 1)[1].strip()
+                        current_chapter.characters_involved = [c.strip() for c in chars_str.split(',') if c.strip()]
+                    elif line.startswith('场景:'):
+                        current_chapter.setting = line.split(':', 1)[1].strip()
+            
+            # 保存最后一个章节
+            if current_chapter and chapter_index >= 0:
+                if chapter_index < len(updated_outline.chapters):
+                    updated_outline.chapters[chapter_index] = current_chapter
+                else:
+                    updated_outline.chapters.append(current_chapter)
+            
+            return updated_outline
+            
+        except Exception as e:
+            logger.error(f"解析编辑大纲失败: {e}")
+            # 如果解析失败，返回原始大纲
+            return self.validated_outline
+
+    def _load_outline_from_storage(self, novel_title):
+        """从storage目录加载已保存的大纲"""
+        try:
+            from src.storage import NovelStorage
+            storage = NovelStorage(novel_title)
+            loaded_outline = storage.load_outline()
+            
+            if loaded_outline:
+                self.validated_outline = loaded_outline
+                formatted_outline = self._format_outline(loaded_outline, master_outline=True)
+                success_msg = f"✅ 成功加载大纲：{novel_title}"
+                return formatted_outline, success_msg
+            else:
+                error_msg = "❌ 未找到已保存的大纲文件"
+                return "未找到已保存的大纲文件", error_msg
+                
+        except Exception as e:
+            error_msg = f"❌ 加载大纲失败：{str(e)}"
+            logger.error(error_msg)
+            return "加载失败", error_msg
+
+    def _get_available_novels(self):
+        """获取所有可用的小说项目列表"""
+        try:
+            import os
+            result_dir = "result"
+            if not os.path.exists(result_dir):
+                return []
+            
+            novels = []
+            for item in os.listdir(result_dir):
+                if item.endswith("_storage") and os.path.isdir(os.path.join(result_dir, item)):
+                    # 提取小说标题（去掉_storage后缀）
+                    novel_title = item[:-8]  # 移除"_storage"
+                    novels.append(novel_title)
+            
+            return novels
+        except Exception as e:
+            logger.error(f"获取小说列表失败: {e}")
+            return []
+
+    def _toggle_outline_edit(self):
+        """切换大纲编辑模式"""
+        if not self.validated_outline:
+            return (
+                gr.update(visible=False),  # outline_edit_box
+                gr.update(visible=True),   # edit_outline_btn
+                gr.update(visible=False),  # save_outline_btn
+                gr.update(visible=False),  # cancel_edit_btn
+                "❌ 请先生成大纲"
+            )
+        
+        # 将当前大纲转换为可编辑的文本格式
+        outline_text = self._outline_to_editable_text(self.validated_outline)
+        
+        return (
+            gr.update(visible=True, value=outline_text),  # outline_edit_box
+            gr.update(visible=False),  # edit_outline_btn
+            gr.update(visible=True),   # save_outline_btn
+            gr.update(visible=True),   # cancel_edit_btn
+            "📝 进入编辑模式，可以修改大纲内容"
+        )
+
+    def _cancel_outline_edit(self):
+        """取消大纲编辑"""
+        return (
+            gr.update(visible=False, value=""),  # outline_edit_box
+            gr.update(visible=True),   # edit_outline_btn
+            gr.update(visible=False),  # save_outline_btn
+            gr.update(visible=False),  # cancel_edit_btn
+            "❌ 已取消编辑"
+        )
+
+    def _outline_to_editable_text(self, outline: NovelOutline):
+        """将NovelOutline对象转换为可编辑的文本格式"""
+        text = f"标题: {outline.title}\n"
+        text += f"类型: {outline.genre}\n"
+        text += f"主题: {outline.theme}\n"
+        text += f"背景: {outline.setting}\n"
+        text += f"情节概要: {outline.plot_summary}\n"
+        text += f"主要角色: {', '.join(outline.characters)}\n\n"
+        
+        text += "章节列表:\n"
+        for i, chapter in enumerate(outline.chapters, 1):
+            if chapter:  # 检查章节是否存在
+                text += f"第{i}章: {chapter.title}\n"
+                text += f"  摘要: {chapter.summary}\n"
+                text += f"  关键事件: {', '.join(chapter.key_events)}\n"
+                text += f"  涉及角色: {', '.join(chapter.characters_involved)}\n"
+                text += f"  场景: {chapter.setting}\n\n"
+        
+        return text
+    
+    def _generate_novel_interactive(self, user_intent, model_type, api_key, base_url, model_name, model_path, min_chapters, volume, master_outline,
+                      status_box, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector, approve_btn, reject_btn):
+        """交互式生成小说的主流程（分步执行，需要用户批准）"""
+        if self.processing:
+            return status_box, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector, gr.update(visible=False), gr.update(visible=False)
+        
+        self.processing = True
+        self.all_chapters = []
+        self.validated_outline = None
+        self.validated_characters = None
+        self.final_result = None
+        self.step_approved = None
+        self.workflow_iterator = None
+        
+        # 关键步骤列表，需要用户批准
+        if master_outline:
+            critical_steps = ["volume2character"]
+        else:
+            critical_steps = ["validate_outline"]
+        
+        try:
+            status = self.__update_status("🔄 初始化工作流...")
+            yield status, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector, gr.update(visible=False), gr.update(visible=False)
+            
+            # 根据模型类型创建配置
+            if model_type == "api":
+                if not api_key:
+                    raise ValueError("API密钥不能为空，请输入有效的API_KEY")
+                if not model_name:
+                    raise ValueError("请输入模型名称")
+                
+                model_config = ModelConfig(
+                    model_type="api",
+                    api_key=api_key,
+                    api_url=base_url,
+                    model_name=model_name
+                )
+                status = self.__update_status(f"✅ 已配置API模型: {model_name}")
+            else:
+                if not model_path:
+                    raise ValueError("本地模型路径不能为空，请输入有效的模型路径")
+                
+                model_config = ModelConfig(
+                    model_type="local",
+                    model_path=model_path
+                )
+                status = self.__update_status(f"✅ 已加载本地模型: {os.path.basename(model_path)}")
+            
+            yield status, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector, gr.update(visible=False), gr.update(visible=False)
+            
+            agent_config = BaseConfig(min_chapters=min_chapters, volume=volume, master_outline=master_outline)
+            
+            self.workflow = create_workflow(model_config, agent_config)
+            status = self.__update_status("✅ 工作流初始化完成，开始交互式生成...")
+            yield status, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector, gr.update(visible=False), gr.update(visible=False)
+            
+            # 创建工作流迭代器
+            self.workflow_iterator = self.workflow.stream(
+                {"user_intent": user_intent, "gradio_mode": True},  # 设置为True以启用交互模式
+                {"recursion_limit": 1000000}
+            )
+            
+            final_state = None
+            for step in self.workflow_iterator:
+                for node, state_dict in step.items():
+                    self.current_state = state_dict
+                    final_state = state_dict
+                    status = self.__update_status(f"🔍 执行节点: {node}")
+
+                    # 更新界面显示
+                    if state_dict.get('validated_outline'):
+                        self.validated_outline = state_dict['validated_outline']
+                        outline_box = self._format_outline(self.validated_outline, master_outline)
+                    
+                    if state_dict.get('validated_characters'):
+                        self.validated_characters = state_dict['validated_characters']
+                        characters_box = self._format_characters(self.validated_characters)
+                    
+                    if state_dict.get('validated_chapter_draft'):
+                        current_index = state_dict.get('current_chapter_index', 0)
+                        chapter_box = self._format_chapter(
+                            state_dict['validated_chapter_draft'], 
+                            current_index
+                        )
+                        if self.last_chapter_index == current_index:
+                            self.all_chapters[-1] = state_dict['validated_chapter_draft']
+                        elif len(self.all_chapters) <= current_index:
+                            self.all_chapters.append(state_dict['validated_chapter_draft'])
+                            chapter_selector = self._update_chapter_selection(self.all_chapters)
+                        self.last_chapter_index = current_index
+                        
+                    if state_dict.get('validated_evaluation'):
+                        evaluation_box = self._format_evaluation(state_dict['validated_evaluation'])
+                    
+                    # 检查是否是关键步骤，需要用户批准
+                    if node in critical_steps:
+                        status = self.__update_status(f"⏸️ 等待用户批准步骤: {node}")
+                        yield status, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector, gr.update(visible=True), gr.update(visible=True)
+                        
+                        # 等待用户批准
+                        self.step_approved = None
+                        while self.step_approved is None and self.processing:
+                            import time
+                            time.sleep(0.1)  # 短暂等待
+                            yield status, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector, gr.update(visible=True), gr.update(visible=True)
+                        
+                        # 检查用户决定
+                        if not self.step_approved:
+                            status = self.__update_status("❌ 用户拒绝了当前步骤，工作流已停止")
+                            yield status, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector, gr.update(visible=False), gr.update(visible=False)
+                            return
+                        
+                        status = self.__update_status(f"✅ 用户批准了步骤: {node}，继续执行...")
+                        yield status, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector, gr.update(visible=False), gr.update(visible=False)
+                    else:
+                        yield status, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector, gr.update(visible=False), gr.update(visible=False)
+            
+            self.final_result = final_state.get('result', '') if final_state else ''
+            if self.final_result == "生成失败":
+                error_msg = final_state.get('final_error', '未知错误') if final_state else '未知错误'
+                status = self.__update_status(f"❌ 小说生成失败：{error_msg}")
+                yield status, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector, gr.update(visible=False), gr.update(visible=False)
+            else:
+                status = self.__update_status("🎉 小说生成完成！可以点击保存按钮保存内容")
+                yield status, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector, gr.update(visible=False), gr.update(visible=False)
+                
+        except Exception as e:
+            error_msg = f"❌ 小说生成失败：{str(e)}"
+            logger.error(error_msg)
+            yield error_msg, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector, gr.update(visible=False), gr.update(visible=False)
+        finally:
+            self.processing = False
+            self.workflow_iterator = None
+
     def _generate_novel(self, user_intent, model_type, api_key, base_url, model_name, model_path, min_chapters, volume, master_outline,
                       status_box, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector):
-        """生成小说的主流程（生成器函数）"""
+        """生成小说的主流程（生成器函数）- 保持原有的自动执行模式"""
         if self.processing:
             return status_box, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector
         
@@ -190,7 +586,7 @@ class NovelGeneratorUI:
             
             final_state = None
             for step in self.workflow.stream(
-                {"user_intent": user_intent},
+                {"user_intent": user_intent, "gradio_mode":True},
                 {"recursion_limit": 1000000}
             ):
                 for node, state_dict in step.items():
@@ -460,20 +856,20 @@ class NovelGeneratorUI:
                     with gr.Accordion("API模型设置", open=True, visible=True, elem_id="api-settings") as api_settings:
                         api_key = gr.Textbox(
                             label="API密钥", 
-                            placeholder="输入你的API密钥",
+                            #placeholder="输入你的API密钥",
                             value=self.default_api_key,
                             type="password",
                             lines=1
                         )
                         base_url = gr.Textbox(
                             label="API基础地址", 
-                            placeholder="例如：https://api.openai.com/v1",
+                            #placeholder="例如：https://api.openai.com/v1",
                             value=self.default_base_url,
                             lines=1
                         )
                         model_name = gr.Textbox(
                             label="模型名称", 
-                            placeholder="例如：gpt-4o",
+                            placeholder="服务提供商提供的模型名称",
                             lines=1
                         )
                     
@@ -498,7 +894,16 @@ class NovelGeneratorUI:
                                 interactive=False,
                                 elem_classes="status-container"
                             )
-                    generate_btn = gr.Button("🚀 开始创作", elem_classes="generate-btn")
+                    
+                    # 生成模式选择
+                    with gr.Row():
+                        generate_btn = gr.Button("🚀 自动创作", elem_classes="generate-btn", scale=1)
+                        interactive_btn = gr.Button("🎯 交互式创作", elem_classes="generate-btn", scale=1)
+                    
+                    # 交互式控制按钮（默认隐藏）
+                    with gr.Row(visible=False) as approval_buttons:
+                        approve_btn = gr.Button("✅ 批准继续", elem_classes="approve-btn", scale=1)
+                        reject_btn = gr.Button("❌ 拒绝停止", elem_classes="reject-btn", scale=1)
                        
                     
                     # 保存设置和状态 - 横向排列（2:1比例）
@@ -546,7 +951,30 @@ class NovelGeneratorUI:
                 with gr.Column(scale=2):
                     with gr.Tabs(elem_classes="info-card"):
                         with gr.Tab("📋 大纲"):
-                            outline_box = gr.Markdown("等待生成...")
+                            with gr.Row():
+                                with gr.Column(scale=3):
+                                    outline_box = gr.Markdown("等待生成...")
+                                with gr.Column(scale=1):
+                                    gr.Markdown("### 🛠️ 大纲操作")
+                                    # 大纲编辑区域
+                                    outline_edit_box = gr.Textbox(
+                                        label="编辑大纲",
+                                        placeholder="生成大纲后，可在此编辑修改...",
+                                        lines=10,
+                                        interactive=True,
+                                        visible=False
+                                    )
+                                    # 操作按钮
+                                    edit_outline_btn = gr.Button("✏️ 编辑大纲", size="sm")
+                                    save_outline_btn = gr.Button("💾 保存大纲", size="sm", visible=False)
+                                    cancel_edit_btn = gr.Button("❌ 取消编辑", size="sm", visible=False)
+                                    
+                                    # 大纲操作状态
+                                    outline_status = gr.Textbox(
+                                        label="操作状态",
+                                        lines=2,
+                                        interactive=False
+                                    )
                         with gr.Tab("👥 角色档案"):
                             characters_box = gr.Markdown("等待生成...")
                         with gr.Tab("📄 章节内容"):
@@ -574,6 +1002,30 @@ class NovelGeneratorUI:
                 outputs=[status_box, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector]
             )
             
+            # 绑定交互式生成按钮事件
+            interactive_btn.click(
+                fn=self._generate_novel_interactive,
+                inputs=[
+                    user_intent, model_type, api_key, base_url, model_name, model_path, min_chapters, volume, master_outline,
+                    status_box, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector, approve_btn, reject_btn
+                ],
+                outputs=[status_box, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector, approval_buttons, approval_buttons]
+            )
+            
+            # 绑定批准按钮事件
+            approve_btn.click(
+                fn=self._approve_current_step,
+                inputs=[],
+                outputs=[status_box, approval_buttons, approval_buttons]
+            )
+            
+            # 绑定拒绝按钮事件
+            reject_btn.click(
+                fn=self._reject_current_step,
+                inputs=[],
+                outputs=[status_box, approval_buttons, approval_buttons]
+            )
+            
             # 绑定保存按钮事件
             save_btn.click(
                 fn=self._save_chapter_novel,    # 分章节存储
@@ -581,17 +1033,54 @@ class NovelGeneratorUI:
                 outputs=[save_status, status_box]
             )
             
+            # 绑定大纲操作事件
+            edit_outline_btn.click(
+                fn=self._toggle_outline_edit,
+                inputs=[],
+                outputs=[outline_edit_box, edit_outline_btn, save_outline_btn, cancel_edit_btn, outline_status]
+            )
+            
+            cancel_edit_btn.click(
+                fn=self._cancel_outline_edit,
+                inputs=[],
+                outputs=[outline_edit_box, edit_outline_btn, save_outline_btn, cancel_edit_btn, outline_status]
+            )
+            
+            save_outline_btn.click(
+                fn=self._save_outline,
+                inputs=[outline_edit_box, status_box],
+                outputs=[outline_status, status_box, outline_box]
+            )
+            
+            
+            
             with gr.Accordion("使用说明", open=False):
                 gr.Markdown("""
-                1. 选择模型类型（API或本地模型）并填写相应配置
-                2. 输入小说创作意图
-                3. 点击"开始生成"按钮启动创作流程
-                4. 在各个标签页查看生成过程和结果：
-                   - 📋 大纲：查看小说整体结构和章节规划
-                   - 👥 角色档案：查看角色背景、性格和成长弧线
-                   - 📄 章节内容：浏览各章节详细内容，可通过下拉框切换
-                   - 📊 评估反馈：查看章节质量评分和改进建议
-                5. 生成完成后，可通过"保存小说"按钮将内容保存到本地文件
+                ## 📖 基本使用流程
+                1. **配置模型**：选择模型类型（API或本地模型）并填写相应配置
+                2. **设置参数**：调整最小章节数、分卷数量等生成参数
+                3. **输入创作意图**：描述你想要的小说类型和主题
+                4. **开始生成**：点击"🚀 开始创作"按钮启动创作流程
+                5. **查看结果**：在各个标签页查看生成过程和结果
+                6. **保存作品**：生成完成后，通过"🗄️ 保存小说"按钮保存内容
+                
+                ## 📋 大纲编辑功能
+                - **查看大纲**：在"📋 大纲"标签页查看生成的小说大纲
+                - **编辑大纲**：点击"✏️ 编辑大纲"按钮进入编辑模式，直接编辑当前已生成的大纲
+                - **修改内容**：在编辑框中直接修改大纲的标题、类型、主题、章节等信息
+                - **保存修改**：点击"💾 保存大纲"将编辑后的大纲保存到storage目录
+                - **取消编辑**：点击"❌ 取消编辑"退出编辑模式
+                
+                ## 📑 各标签页功能
+                - **📋 大纲**：查看和编辑小说整体结构、章节规划
+                - **👥 角色档案**：查看角色背景、性格和成长弧线
+                - **📄 章节内容**：浏览各章节详细内容，可通过下拉框切换
+                - **📊 评估反馈**：查看章节质量评分和改进建议
+                
+                ## 💡 使用技巧
+                - 编辑大纲后保存，可以影响后续章节的生成
+                - 大纲保存在`result/小说标题_storage/outline.json`文件中
+                - 支持前端与工作流解耦，方便灵活调整创作方向
                 """)
         
         return demo
