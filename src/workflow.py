@@ -11,6 +11,7 @@ from src.agent import (
     EntityAgent,
 ) 
 from src.node import *
+from src.feedback_nodes import outline_feedback_node, process_outline_feedback_node, check_outline_feedback_node
 from src.state import NovelState
 from src.log_config import loggers
 from src.model_manager import LocalModelManager, APIModelManager
@@ -62,7 +63,7 @@ def create_workflow(model_config: ModelConfig, Agent_config: BaseConfig= None) -
     # -------------------- 创建节点 --------------------
     if OutlineConfig.master_outline:
         # 分卷
-        workflow.add_node("generate_master_outline",
+        workflow.add_node("generate_outline",
                         lambda state: generate_master_outline_node(state, outline_agent))
         workflow.add_node("validate_master_outline", validate_master_outline_node)
         
@@ -80,6 +81,9 @@ def create_workflow(model_config: ModelConfig, Agent_config: BaseConfig= None) -
                         lambda state: generate_outline_node(state, outline_agent))
         workflow.add_node("validate_outline", validate_outline_node)
         
+    # 反馈节点
+    workflow.add_node("outline_feedback", outline_feedback_node)
+    workflow.add_node("process_outline_feedback", process_outline_feedback_node)
     
     # 角色
     workflow.add_node("generate_characters", 
@@ -124,14 +128,14 @@ def create_workflow(model_config: ModelConfig, Agent_config: BaseConfig= None) -
     # 大纲(原逻辑保留)
     
     if OutlineConfig.master_outline:
-        workflow.set_entry_point("generate_master_outline")
-        workflow.add_edge("generate_master_outline", "validate_master_outline")
+        workflow.set_entry_point("generate_outline")
+        workflow.add_edge("generate_outline", "validate_master_outline")
         workflow.add_conditional_edges(
             "validate_master_outline",
             check_master_outline_node,
             {
                 "success": "generate_volume_outline",
-                "retry": "generate_master_outline",
+                "retry": "generate_outline",
                 "failure": "failure"
             }
         )
@@ -150,7 +154,7 @@ def create_workflow(model_config: ModelConfig, Agent_config: BaseConfig= None) -
             "accpet_outline",
             check_outline_completion_node,
             {
-                "complete":"generate_characters",
+                "complete":"outline_feedback",
                 "continue":"generate_volume_outline"
             }
         )
@@ -162,11 +166,23 @@ def create_workflow(model_config: ModelConfig, Agent_config: BaseConfig= None) -
             "validate_outline",
             check_outline_node,
             {
-                "success": "generate_characters",
+                "success": "outline_feedback",
                 "retry": "generate_outline",
                 "failure": "failure"
             }
         )
+    
+    # 反馈流程
+    workflow.add_edge("outline_feedback", "process_outline_feedback")
+    workflow.add_conditional_edges(
+        "process_outline_feedback",
+        check_outline_feedback_node,
+        {
+            "success": "generate_characters",
+            "retry": "generate_outline",
+            "failure": "failure"
+        }
+    )
     
     # 角色档案
     workflow.add_edge("generate_characters", "validate_characters")
