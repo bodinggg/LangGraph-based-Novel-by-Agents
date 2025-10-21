@@ -59,6 +59,13 @@ class NovelState(BaseModel):
     # 实体生成控制
     raw_entities: Optional[str] = None
     entities_validated_error: Optional[str] = None
+    
+    # 反馈控制
+    outline_feedback_request: Optional[dict] = None
+    outline_feedback_id: Optional[str] = None
+    feedback_action: Optional[str] = None
+    outline_modified: Optional[bool] = None
+    feedback_error: Optional[str] = None
     	
     # 结果
     result: Optional[str] = None
@@ -67,6 +74,8 @@ class NovelState(BaseModel):
     final_content: Optional[List[ChapterContent]] = None
     final_error: Optional[str] = None
     
+    # Gradio
+    gradio_mode: bool = False
+    
+    
     model_config = ConfigDict(arbitrary_types_allowed=True)
-    
-    
