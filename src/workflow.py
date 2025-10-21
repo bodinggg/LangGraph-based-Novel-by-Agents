@@ -1,185 +1,258 @@
 """
-用户反馈节点 - 简化版本
-在关键环节添加人工审查功能
+定义工作状态, 核心部分
 """
-from typing import Dict, Any, Literal
+from typing import Dict
+from langgraph.graph import StateGraph, END
+from src.agent import (
+    OutlineGeneratorAgent,
+    CharacterAgent,
+    WriterAgent,
+    ReflectAgent,
+    EntityAgent,
+) 
+from src.node import *
+from src.feedback_nodes import outline_feedback_node, process_outline_feedback_node, check_outline_feedback_node
 from src.state import NovelState
-from src.model import NovelOutline
 from src.log_config import loggers
-import json
+from src.model_manager import LocalModelManager, APIModelManager
+from src.config_loader import (
+    OutlineConfig,
+    CharacterConfig,
+    WriterConfig,
+    ReflectConfig,
+    EntityConfig,
+    BaseConfig,
+    ModelConfig
+)
 
-logger = loggers['feedback']
+logger = loggers['workflow']
 
-class FeedbackManager:
-    """简化的反馈管理器"""
+# 构建工作流
+def create_workflow(model_config: ModelConfig, Agent_config: BaseConfig= None) -> StateGraph:
+    """创建包含章节写作和质量评审的完整工作流"""
+    # 获取共享模型实例和分词器
+    model_type = model_config.model_type
     
-    def __init__(self):
-        self.pending_feedback = {}
-        self.user_modifications = {}
+    if model_type == "local":
+        model_manager = LocalModelManager(model_config.model_path)
+    elif model_type == "api":
+        model_manager = APIModelManager(
+            model_config.api_url,
+            model_config.api_key,
+            model_name=model_config.model_name,
+            max_retries=model_config.max_retries,
+            retry_delay=model_config.retry_delay
+        )
+    logger.info(f"成功加载{model_type}模型管理器")
+    # 允许改变config值
+    if Agent_config is not None:
+        OutlineConfig.min_chapters = Agent_config.min_chapters
+        OutlineConfig.volume = Agent_config.volume
+        OutlineConfig.master_outline = Agent_config.master_outline
+    # 初始化 Agent
+    outline_agent = OutlineGeneratorAgent(model_manager, OutlineConfig)    # 大纲
+    character_agent = CharacterAgent(model_manager, CharacterConfig)         # 角色
+    writer_agent = WriterAgent(model_manager, WriterConfig)               # 写作
+    reflect_agent = ReflectAgent(model_manager, ReflectConfig)             # 反思
+    entity_agent = EntityAgent(model_manager, EntityConfig)                 # 实体识别
     
-    def request_feedback(self, step: str, content: Any, state: NovelState) -> Dict[str, Any]:
-        """请求用户反馈"""
-        feedback_id = f"{step}_{state.current_chapter_index if hasattr(state, 'current_chapter_index') else 0}"
-        print(f"[test] feedback_id: {feedback_id}")
-        
-        self.pending_feedback[feedback_id] = {
-            "step": step,
-            "content": content,
-            "status": "pending",
-            "timestamp": None
-        }
-        
-        logger.info(f"请求用户反馈: {step}")
-        
-        
-        return {
-            "feedback_id": feedback_id,
-            "step": step,
-            "content": content,
-            "requires_feedback": True
-        }
+    logger.info("代理初始化完成, 开始构建工作流图...")
     
-    def submit_feedback(self, feedback_id: str, action: str, modified_content: Any = None) -> Dict[str, Any]:
-        """提交用户反馈"""
-        if feedback_id not in self.pending_feedback:
-            raise ValueError(f"未找到反馈ID: {feedback_id}")
+    # 创建图
+    workflow = StateGraph(NovelState)
+    # -------------------- 创建节点 --------------------
+    if OutlineConfig.master_outline:
+        # 分卷
+        workflow.add_node("generate_outline",
+                        lambda state: generate_master_outline_node(state, outline_agent))
+        workflow.add_node("validate_master_outline", validate_master_outline_node)
         
-        feedback = self.pending_feedback[feedback_id]
-        feedback["status"] = "completed"
-        feedback["action"] = action
+        # 分章
+        workflow.add_node("generate_volume_outline", 
+                        lambda state: generate_volume_outline_node(state, outline_agent))
+        workflow.add_node("validate_volume_outline", validate_volume_outline_node)
         
-        if modified_content is not None:
-            feedback["modified_content"] = modified_content
-            self.user_modifications[feedback_id] = modified_content
-            content = modified_content
-        else:
-            content = feedback["content"]
-        
-        
-        logger.info(f"用户反馈已提交: {action} for {feedback['step']}")
-        return {
-            "feedback_id": feedback_id,
-            "step": feedback['step'],
-            "content": content,
-            "requires_feedback": True
-        }
-
-
-# 全局反馈管理器实例
-feedback_manager = FeedbackManager()
-
-def outline_feedback_node(state: NovelState) -> Dict[str, Any]:
-    """大纲反馈节点 - 等待用户确认或修改大纲"""
-    logger.info("进入大纲反馈节点")
-    
-    if not state.validated_outline:
-        return {
-            "feedback_error": "没有可用的大纲进行反馈",
-            "requires_feedback": False
-        }
-    
-    if state.gradio_mode:
-        # Gradio模式：直接通过，不需要交互
-        return {
-            "outline_modified": False,
-            "feedback_action": "success"
-        }
+        # 合并
+        workflow.add_node("accpet_outline", accept_outline_node)
+        workflow.add_node("volume2character", volume2character)
     else:
-        # 命令行模式：请求用户交互
-        step = input("您可以查看result/*_storage下的 outline.json文件，如果需要修改可以直接对源文件内容修改！\n请确认大纲无误，是否需要修改？(y/n)")
-        feedback_request = feedback_manager.request_feedback(
-                step="outline_review",
-                content=state.validated_outline,
-                state=state
-            )
-        if step.lower() == "y":
-            # 请求用户对大纲的反馈
-            input("如果您修改完了，回车继续后续流程")
-            # 修改大纲
-            feedback_sumbit = feedback_manager.submit_feedback(
-                feedback_id=feedback_request["feedback_id"],
-                action="continue",
-                modified_content=state.validated_outline        # 直接使用当前的大纲作为修改后的内容
-            )
-        else:
-            # 确认大纲无误，直接进入下一步，不需要修改大纲
-            feedback_sumbit = feedback_manager.submit_feedback(
-                feedback_id=feedback_request["feedback_id"],
-                action="continue"
-            )
-        return {
-            "outline_feedback_id": feedback_sumbit["feedback_id"],
-            "outline_feedback_request": feedback_sumbit,
-            "requires_feedback": True,
-            "feedback_step": feedback_sumbit["step"]
-        }
-
-def process_outline_feedback_node(state: NovelState) -> Dict[str, Any]:
-    """处理大纲反馈结果"""
-    logger.info("处理大纲反馈结果")
-    
-    if state.gradio_mode:
-        # Gradio模式：直接返回成功
-        return {
-            "outline_modified": False,
-            "feedback_action": "success"
-        }
-    
-    feedback_id = state.outline_feedback_id
-    if not feedback_id:
-        return {"feedback_error": "缺少反馈ID"}
-    
-    try:
-        feedback = feedback_manager.pending_feedback.get(feedback_id)
-        if not feedback:
-            return {"feedback_error": "未找到对应的反馈"}
+        # 大纲
+        workflow.add_node("generate_outline", 
+                        lambda state: generate_outline_node(state, outline_agent))
+        workflow.add_node("validate_outline", validate_outline_node)
         
-        action = feedback.get("action", "continue")
+    # 反馈节点
+    workflow.add_node("outline_feedback", outline_feedback_node)
+    workflow.add_node("process_outline_feedback", process_outline_feedback_node)
+    
+    # 角色
+    workflow.add_node("generate_characters", 
+                     lambda state: generate_characters_node(state, character_agent))
+    workflow.add_node("validate_characters",validate_characters_node)
+    
+    # 写作
+    workflow.add_node("write_chapter",
+                      lambda state: write_chapter_node(state, writer_agent))
+    workflow.add_node("validate_chapter", validate_chapter_node)
+    
+    # 新增：实体识别
+    workflow.add_node("generate_entities",
+                      lambda state: generate_entities_node(state, entity_agent))
+    workflow.add_node("validate_entities", validate_entities_node)
+    
+    # 评估
+    workflow.add_node("evaluate_chapter",
+                      lambda state: evaluate_chapter_node(state, reflect_agent))
+    workflow.add_node("validate_evaluate", validate_evaluate_node)
+    
+    workflow.add_node("evaluate2wirte", evaluation_to_chapter_node)
+    
+    # 接受本章
+    workflow.add_node("accpet_chapter", accept_chapter_node)
+    
+    
+    workflow.add_node("success", lambda state: {
+        "result": "小说创作流程完成",
+        "final_outline": state.novel_storage.load_outline(),
+        "final_characters":state.novel_storage.load_characters(),
+        "final_content": state.novel_storage.load_all_chapters()
+    })
+    
+    workflow.add_node("failure", lambda state: {
+        "result": "生成失败", 
+        "final_error": state.outline_validated_error or state.characters_validated_error or state.current_chapter_validated_error or state.evaluation_validated_error
+    })
+    
+    
+    # -------------------- 创建边 --------------------
+    # 大纲(原逻辑保留)
+    
+    if OutlineConfig.master_outline:
+        workflow.set_entry_point("generate_outline")
+        workflow.add_edge("generate_outline", "validate_master_outline")
+        workflow.add_conditional_edges(
+            "validate_master_outline",
+            check_master_outline_node,
+            {
+                "success": "generate_volume_outline",
+                "retry": "generate_outline",
+                "failure": "failure"
+            }
+        )
+        workflow.add_edge("generate_volume_outline", "validate_volume_outline")
+        workflow.add_conditional_edges(
+            "validate_volume_outline",
+            check_volume_outline_node,
+            {
+                "success": "volume2character",
+                "retry": "generate_volume_outline",
+                "failure": "failure"
+            }
+        )
+        workflow.add_edge("volume2character", "accpet_outline")
+        workflow.add_conditional_edges(
+            "accpet_outline",
+            check_outline_completion_node,
+            {
+                "complete":"outline_feedback",
+                "continue":"generate_volume_outline"
+            }
+        )
         
-        if action == "modify" and "modified_content" in feedback:
-            # 用户修改了大纲
-            modified_outline = feedback["modified_content"]
-            logger.info("用户修改了大纲，应用修改")
-            
-            return {
-                "validated_outline": modified_outline,
-                "outline_modified": True,
-                "feedback_action": "success"
-            }
-        elif action == "regenerate":
-            # 用户要求重新生成
-            logger.info("用户要求重新生成大纲")
-            return {
-                "validated_outline": None,
-                "outline_modified": False,
-                "feedback_action": "retry"
-            }
-        else:
-            # 用户确认继续
-            logger.info("用户确认大纲，继续流程")
-            return {
-                "outline_modified": False,
-                "feedback_action": "success"
-            }
-            
-    except Exception as e:
-        logger.error(f"处理大纲反馈时出错: {str(e)}")
-        return {"feedback_error": f"处理反馈失败: {str(e)}"}
-
-def check_outline_feedback_node(state: NovelState) -> Literal["success", "retry", "failure"]:
-    """检查大纲反馈处理结果"""
-    if state.gradio_mode:
-        return "success"
-    
-    logger.info(f"检查大纲反馈处理结果: state.feedback_action = {state.feedback_action}; state.feedback_error = {state.feedback_error}")
-    if state.feedback_error:
-        return "failure"
-
-    action = state.feedback_action
-    
-    if action == "retry":
-        return "retry"
-    elif action == "modify":
-        return "success"
     else:
-        return "success"
+        workflow.set_entry_point("generate_outline")
+        workflow.add_edge("generate_outline", "validate_outline")
+        workflow.add_conditional_edges(
+            "validate_outline",
+            check_outline_node,
+            {
+                "success": "outline_feedback",
+                "retry": "generate_outline",
+                "failure": "failure"
+            }
+        )
+    
+    # 反馈流程
+    workflow.add_edge("outline_feedback", "process_outline_feedback")
+    workflow.add_conditional_edges(
+        "process_outline_feedback",
+        check_outline_feedback_node,
+        {
+            "success": "generate_characters",
+            "retry": "generate_outline",
+            "failure": "failure"
+        }
+    )
+    
+    # 角色档案
+    workflow.add_edge("generate_characters", "validate_characters")
+    workflow.add_conditional_edges(
+        "validate_characters",
+        check_characters_node,
+        {
+            "success": "write_chapter",
+            "retry": "generate_characters",
+            "failure": "failure"
+        }
+    )
+    
+    # 写作
+    workflow.add_edge("write_chapter", "validate_chapter")
+    workflow.add_conditional_edges(
+        "validate_chapter",
+        check_chapter_node,
+        {
+            "success": "evaluate_chapter",
+            "retry": "write_chapter",
+            "failure": "failure"
+        }
+    )
+    
+    
+    # 评估
+    workflow.add_edge("evaluate_chapter", "validate_evaluate")
+    workflow.add_conditional_edges(
+        "validate_evaluate",
+        check_evaluation_node,
+        {
+            "success": "evaluate2wirte",
+            "retry": "evaluate_chapter",
+            "failure":"failure"
+        }
+    )
+    workflow.add_conditional_edges(
+        "evaluate2wirte",
+        check_evaluation_chapter_node,
+        {
+            "accept":"generate_entities",   # 验证通过，执行实体分析
+            "revise":"write_chapter",
+            "force_accpet":"accpet_chapter"
+        }
+    )
+    
+    # 新增：实体识别
+    workflow.add_edge("generate_entities", "validate_entities")
+    workflow.add_conditional_edges(
+        "validate_entities",
+        check_entities_node,
+        {
+            "success": "accpet_chapter",    # 实体识别成功，接受章节
+            "retry": "generate_entities",
+            "failure": "failure"
+        }
+    )
+    
+    workflow.add_conditional_edges(
+        "accpet_chapter",
+        check_chapter_completion_node,
+        {
+            "complete":"success",
+            "continue":"write_chapter"
+        }
+    )
+    
+    workflow.add_edge("success", END)
+    workflow.add_edge("failure", END)
+    logger.info("工作流图创建完成, 开始编译!")
+    # 编译图
+    return workflow.compile()
