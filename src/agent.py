@@ -8,6 +8,7 @@ from src.state import NovelState
 from src.model import ChapterContent
 from src.model_manager import ModelManager
 from src.config_loader import BaseConfig
+from src.thinking_logger import log_agent_thinking
 
 
 
@@ -24,11 +25,23 @@ class OutlineGeneratorAgent:
         master_prompt = MASTER_OUTLINE_PROMPT.format(
             user_intent=user_intent, min_chapters=min_chapters, volume=volume
         )
+        
         messages = [
             {"role":"system", "content": OUTLINE_INSTRUCT},
             {"role":"user", "content":master_prompt}
         ]
-        return self.model_manager.generate(messages, self.config)
+
+        response = self.model_manager.generate(messages, self.config)
+        
+        # 记录思考过程
+        log_agent_thinking(
+            agent_name="OutlineGeneratorAgent",
+            node_name="generate_master_outline",
+            prompt_content=messages,
+            response_content=response
+        )
+        
+        return response
         
     # 基于总纲生成单卷
     def generate_volume_chapters(self, state: NovelState, volume_index:int) -> str:
@@ -66,7 +79,18 @@ class OutlineGeneratorAgent:
             {"role":"user", "content":prompt}
         ]
         
-        return self.model_manager.generate(messages, self.config)
+        response = self.model_manager.generate(messages, self.config)
+        
+        # 记录思考过程
+        log_agent_thinking(
+            agent_name="OutlineGeneratorAgent",
+            node_name="generate_volume_chapters",
+            prompt_content=messages,
+            response_content=response,
+            error_message=state.outline_validated_error
+        )
+        
+        return response
     
     def generate_outline(self, state: NovelState) -> str:
         
@@ -91,7 +115,18 @@ class OutlineGeneratorAgent:
             }
         ]
         
-        return self.model_manager.generate(messages, self.config)
+        response = self.model_manager.generate(messages, self.config)
+        
+        # 记录思考过程
+        log_agent_thinking(
+            agent_name="OutlineGeneratorAgent",
+            node_name="generate_outline",
+            prompt_content=messages,
+            response_content=response,
+            error_message=error_message
+        )
+        
+        return response
 
 # 角色代理 - 用于生成角色档案
 class CharacterAgent:
@@ -141,7 +176,18 @@ class CharacterAgent:
             }
         ]
         
-        return self.model_manager.generate(messages, self.config)
+        response = self.model_manager.generate(messages, self.config)
+        
+        # 记录思考过程
+        log_agent_thinking(
+            agent_name="CharacterAgent",
+            node_name="generate_characters",
+            prompt_content=messages,
+            response_content=response,
+            error_message=error_message
+        )
+        
+        return response
     
 # 写作代理 - 用于单章撰写
 class WriterAgent:
@@ -196,7 +242,18 @@ class WriterAgent:
             )
         messages = [{"role": "user", "content": prompt}]
         
-        return self.model_manager.generate(messages, self.config)
+        response = self.model_manager.generate(messages, self.config)
+        
+        # 记录思考过程
+        log_agent_thinking(
+            agent_name="WriterAgent",
+            node_name="write_chapter",
+            prompt_content=messages,
+            response_content=response,
+            error_message=error_message
+        )
+        
+        return response
 
         
     
@@ -366,7 +423,18 @@ class ReflectAgent:
             }
         ]
         
-        return self.model_manager.generate(messages, self.config)
+        response = self.model_manager.generate(messages, self.config)
+        
+        # 记录思考过程
+        log_agent_thinking(
+            agent_name="ReflectAgent",
+            node_name="evaluate_chapter",
+            prompt_content=messages,
+            response_content=response,
+            error_message=error_message
+        )
+        
+        return response
 
 # 实体代理 - 用于控制情节发展
 class EntityAgent:
@@ -392,4 +460,14 @@ class EntityAgent:
             }
         ]
         
-        return self.model_manager.generate(messages, self.config)
+        response = self.model_manager.generate(messages, self.config)
+        
+        # 记录思考过程
+        log_agent_thinking(
+            agent_name="EntityAgent",
+            node_name="generate_entities",
+            prompt_content=messages,
+            response_content=response
+        )
+        
+        return response
