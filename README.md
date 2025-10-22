@@ -21,6 +21,8 @@
   
 
 ## 略大一些更新の日志
+2025-10-22:   追加对会话的记录，现在logs可以看流程状态，thinking_logs可以看Agent思考过程
+
 2025-10-21：  添加用户行为，可以主动修改大纲了。
 
 2025-10-21：  针对Reflect Agent进一步优化，处理多种反馈情况，并适配不同模板
@@ -99,9 +101,13 @@ my_novel/
 ├── assets/                # 新增：存放README图片
 │   ├── gradio_interface.png  # 示例：Gradio前端界面截图
 │   └── workflow_diagram.png  # 示例：工作流流程图
-├──app_gradio.py         # 前端入口
-├──app.py               # 终端入口，处理用户输入与启动工作流
-├──config.yaml          # 配置文件，配置Agent所用模型参数
+├── app_gradio.py         # 前端入口
+├── app.py               # 终端入口，处理用户输入与启动工作流
+├── config.yaml          # 配置文件，配置Agent所用模型参数
+├── result/              # 存储结果
+│   └──*_sotrage/        # 运行过程中的存储
+├── logs/                # 工作流日志记录
+├── thinking_logs/       # Agent会话日志记录
 ├── web/                
 │   └── style.css     # gradio配置文件
 └──src/
@@ -122,6 +128,7 @@ my_novel/
    ├── feedback_nodes.py    # 审查节点，用于接受用户输入
    ├── config_loader.py     # 生成参数配置（长度、温度等）
    ├── log_config.py        # 配置log文件
+   ├── thinking_logger.py   # 添加会话记录
    └── tool.py              # 工具函数（如JSON提取）
    ```
 
