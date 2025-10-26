@@ -49,8 +49,12 @@ class ProcessedFeedback:
         if self.evaluation.passes:
             return "maintain_quality"
         
+        # 长度检查不通过时使用扩展内容策略
+        if not self.evaluation.length_check:
+            return "expand_content"
+        
         if not self.evaluation.feedback_items:
-            return "general_improvement"
+            return "targeted_revision"
         
         # 根据主要问题类型确定策略
         categories = [item.category for item in self.evaluation.feedback_items]
@@ -60,14 +64,14 @@ class ProcessedFeedback:
         strategy_map = {
             'plot': 'plot_focused',
             'character': 'character_focused', 
-            'style': 'style_focused',
-            'dialogue': 'dialogue_focused',
-            'pacing': 'pacing_focused',
-            'description': 'description_focused',
-            'logic': 'logic_focused'
+            'style': 'targeted_revision',  # 风格问题使用针对性修改
+            'dialogue': 'targeted_revision',  # 对话问题使用针对性修改
+            'pacing': 'targeted_revision',  # 节奏问题使用针对性修改
+            'description': 'targeted_revision',  # 描写问题使用针对性修改
+            'logic': 'targeted_revision'   # 逻辑问题使用针对性修改
         }
         
-        return strategy_map.get(main_category, 'comprehensive_revision')
+        return strategy_map.get(main_category, 'comprehensive_rewrite')
 
 class FeedbackProcessor:
     """简化的反馈处理器"""
