@@ -11,7 +11,9 @@ from src.agent import (
     EntityAgent,
 ) 
 from src.node import *
-from src.feedback_nodes import outline_feedback_node, process_outline_feedback_node, check_outline_feedback_node
+from src.outline_feedback_nodes import outline_feedback_node, process_outline_feedback_node, check_outline_feedback_node
+from src.character_feedback_nodes import character_feedback_node, process_character_feedback_node, check_character_feedback_node
+from src.chapter_feedback_nodes import chapter_feedback_node, process_chapter_feedback_node, check_chapter_feedback_node
 from src.state import NovelState
 from src.log_config import loggers
 from src.model_manager import LocalModelManager, APIModelManager
@@ -90,10 +92,18 @@ def create_workflow(model_config: ModelConfig, Agent_config: BaseConfig= None) -
                      lambda state: generate_characters_node(state, character_agent))
     workflow.add_node("validate_characters",validate_characters_node)
     
+    # 角色反馈节点
+    workflow.add_node("character_feedback", character_feedback_node)
+    workflow.add_node("process_character_feedback", process_character_feedback_node)
+    
     # 写作
     workflow.add_node("write_chapter",
                       lambda state: write_chapter_node(state, writer_agent))
     workflow.add_node("validate_chapter", validate_chapter_node)
+    
+    # 章节反馈节点
+    workflow.add_node("chapter_feedback", chapter_feedback_node)
+    workflow.add_node("process_chapter_feedback", process_chapter_feedback_node)
     
     # 新增：实体识别
     workflow.add_node("generate_entities",
@@ -172,7 +182,7 @@ def create_workflow(model_config: ModelConfig, Agent_config: BaseConfig= None) -
             }
         )
     
-    # 反馈流程
+    # 反馈流程 - 大纲编辑在角色档案生成前进行
     workflow.add_edge("outline_feedback", "process_outline_feedback")
     workflow.add_conditional_edges(
         "process_outline_feedback",
@@ -190,6 +200,18 @@ def create_workflow(model_config: ModelConfig, Agent_config: BaseConfig= None) -
         "validate_characters",
         check_characters_node,
         {
+            "success": "character_feedback",
+            "retry": "generate_characters",
+            "failure": "failure"
+        }
+    )
+    
+    # 角色反馈流程
+    workflow.add_edge("character_feedback", "process_character_feedback")
+    workflow.add_conditional_edges(
+        "process_character_feedback",
+        check_character_feedback_node,
+        {
             "success": "write_chapter",
             "retry": "generate_characters",
             "failure": "failure"
@@ -201,6 +223,18 @@ def create_workflow(model_config: ModelConfig, Agent_config: BaseConfig= None) -
     workflow.add_conditional_edges(
         "validate_chapter",
         check_chapter_node,
+        {
+            "success": "chapter_feedback",
+            "retry": "write_chapter",
+            "failure": "failure"
+        }
+    )
+    
+    # 章节反馈流程
+    workflow.add_edge("chapter_feedback", "process_chapter_feedback")
+    workflow.add_conditional_edges(
+        "process_chapter_feedback",
+        check_chapter_feedback_node,
         {
             "success": "evaluate_chapter",
             "retry": "write_chapter",
