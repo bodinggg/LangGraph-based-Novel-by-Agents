@@ -59,13 +59,27 @@ class NovelState(BaseModel):
     # 实体生成控制
     raw_entities: Optional[str] = None
     entities_validated_error: Optional[str] = None
-    
+     
     # 反馈控制
     outline_feedback_request: Optional[dict] = None
     outline_feedback_id: Optional[str] = None
-    feedback_action: Optional[str] = None
+    outline_feedback_action: Optional[str] = None
     outline_modified: Optional[bool] = None
-    feedback_error: Optional[str] = None
+    outline_feedback_error: Optional[str] = None
+    
+    # 角色档案反馈控制
+    character_feedback_request: Optional[dict] = None
+    character_feedback_id: Optional[str] = None
+    character_feedback_action: Optional[str] = None
+    character_modified: Optional[bool] = None
+    character_feedback_error: Optional[str] = None
+    
+    # 章节内容反馈控制
+    chapter_feedback_request: Optional[dict] = None
+    chapter_feedback_id: Optional[str] = None
+    chapter_feedback_action: Optional[str] = None
+    chapter_modified: Optional[bool] = None
+    chapter_feedback_error: Optional[str] = None
     	
     # 结果
     result: Optional[str] = None
