@@ -11,9 +11,18 @@ from src.agent import (
     EntityAgent,
 ) 
 from src.node import *
-from src.outline_feedback_nodes import outline_feedback_node, process_outline_feedback_node, check_outline_feedback_node
-from src.character_feedback_nodes import character_feedback_node, process_character_feedback_node, check_character_feedback_node
-from src.chapter_feedback_nodes import chapter_feedback_node, process_chapter_feedback_node, check_chapter_feedback_node
+# from src.unified_feedback_system import (
+#     outline_feedback_node, process_outline_feedback_node, check_outline_feedback_node,
+#     character_feedback_node, process_character_feedback_node, check_character_feedback_node,
+#     chapter_feedback_node, process_chapter_feedback_node, check_chapter_feedback_node
+# )
+
+from src.feedback_nodes import (
+    outline_feedback_node, process_outline_feedback_node, check_outline_feedback_node,
+    character_feedback_node, process_character_feedback_node, check_character_feedback_node,
+    chapter_feedback_node, process_chapter_feedback_node, check_chapter_feedback_node
+)
+
 from src.state import NovelState
 from src.log_config import loggers
 from src.model_manager import LocalModelManager, APIModelManager
