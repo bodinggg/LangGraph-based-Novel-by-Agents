@@ -129,9 +129,7 @@ my_novel/
    ├── prompt.py            # 各Agent的提示词模板
    ├── enhanced_prompt.py   # 评估反馈分支提示词模板
    ├── feedback_processor.py# 对于反馈不同的分支处理
-   ├── outline_feedback_nodes.py      # 大纲审查节点，用于接受用户输入
-   ├── character_feedback_nodes.py    # 角色审查节点，用于接受用户输入
-   ├── chapter_feedback_nodes.py      # 章节审查节点，用于接受用户输入
+   ├── feedback_nodes.py      # 审查节点，用于接受用户输入
    ├── config_loader.py     # 生成参数配置（长度、温度等）
    ├── log_config.py        # 配置log文件
    ├── thinking_logger.py   # 添加会话记录
