@@ -20,9 +20,12 @@
 - **模型支持**：利用本地与 API 双模式兼容技术，实现对不同部署方式模型的支持，提升场景适配性
 - **Prompt工程**：利用场景化动态模板体系技术，结合分层 Prompt 模板、变量注入与 Token 优化手段，实现 Prompt 工程的高效落地，提升模型响应质量
 - **Human-in-the-Loop**: 利用新增节点接受命令行反馈，利用中断等待接受前端反馈，实现对大纲文件编辑。
+- **质量评估**：利用Reflect Agent反馈内容，结构化处理，形成json形式的评估报告，帮助了解模型对于生成内容的评估内容。
   
 
 ## 略大一些更新の日志
+2025-11-03：  添加质量评估结构化展示
+
 2025-10-25:   添加角色档案+内容修改，修改逻辑有小改动
 
 2025-10-22:   追加对会话的记录，现在logs可以看流程状态，thinking_logs可以看Agent思考过程
@@ -79,7 +82,7 @@ pip install -r requirements.txt
 1. 启动应用
 
 ```bash
-python app.py --model-type api or local
+python app.py --model-type api or local --hitl True or False
 ```
 如果是使用api方式的话，记得填写.env文件。
 ```bash
@@ -128,7 +131,8 @@ my_novel/
    ├── storage.py           # 持久化到本地
    ├── prompt.py            # 各Agent的提示词模板
    ├── enhanced_prompt.py   # 评估反馈分支提示词模板
-   ├── feedback_processor.py# 对于反馈不同的分支处理
+   ├── feedback_processor.py  # 对于反馈不同的分支处理
+   ├── evaluation_reporter.py # 处理评估内容
    ├── feedback_nodes.py      # 审查节点，用于接受用户输入
    ├── config_loader.py     # 生成参数配置（长度、温度等）
    ├── log_config.py        # 配置log文件
