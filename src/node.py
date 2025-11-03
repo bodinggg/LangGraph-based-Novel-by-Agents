@@ -518,6 +518,7 @@ def evaluate_report_node(state: NovelState, reflect_agent: ReflectAgent) -> Nove
     """生成评估报告的节点"""
     try:
         reflect_agent.generate_evaluation_report(state)
+        logger.info(f"【内容评估】生成评估报告成功")
         return{
             "report_error":None
         }
