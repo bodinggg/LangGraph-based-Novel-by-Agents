@@ -14,7 +14,7 @@ def get_args():
     parser = argparse.ArgumentParser()
     
     parser.add_argument("--model_type", default='api',type=str, help="local or api")
-
+    parser.add_argument("--hitl", default=False, type=bool, help="hitl or not")
     return parser.parse_args()
 
 api_key = os.getenv("API_KEY")
@@ -45,6 +45,7 @@ def main():
         result = app.invoke(
             {
                 "user_intent":user_intent,
+                "gradio_mode":True if not args.hitl else False,
             },
             {
                 "recursion_limit": OutlineConfig.min_chapters * 50  # 限制最大循环次数
@@ -59,3 +60,4 @@ def main():
 if __name__ == "__main__":
 
     main()
+
