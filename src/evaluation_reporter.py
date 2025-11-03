@@ -51,8 +51,7 @@ class EvaluationReporter:
             "overall_score": evaluation.score,
             "pass_status": evaluation.passes,
             "length_check": evaluation.length_check,
-            "overall_feedback": evaluation.overall_feedback,
-            "confidence_score": evaluation.confidence_score or 0.8
+            "overall_feedback": evaluation.overall_feedback
         }
     
     def _generate_detailed_metrics(self, evaluation: QualityEvaluation) -> Dict[str, Any]:
@@ -63,12 +62,6 @@ class EvaluationReporter:
                 "character_consistency": evaluation.character_score or 0,
                 "writing_style": evaluation.style_score or 0,
                 "pacing_control": evaluation.pacing_score or 0
-            },
-            "extended_dimensions": {
-                "consistency": evaluation.consistency_score or 0,
-                "coherence": evaluation.coherence_score or 0,
-                "completeness": evaluation.completeness_score or 0,
-                "correctness": evaluation.correctness_score or 0
             }
         }
         
@@ -77,11 +70,7 @@ class EvaluationReporter:
             evaluation.plot_score or 0,
             evaluation.character_score or 0, 
             evaluation.style_score or 0,
-            evaluation.pacing_score or 0,
-            evaluation.consistency_score or 0,
-            evaluation.coherence_score or 0,
-            evaluation.completeness_score or 0,
-            evaluation.correctness_score or 0
+            evaluation.pacing_score or 0
         ]
         metrics["composite_score"] = sum(all_scores) / len(all_scores) if all_scores else 0
         
@@ -126,14 +115,6 @@ class EvaluationReporter:
                 "priority": "high" if evaluation.character_score < 5 else "medium",
                 "suggestion": "提升角色表现一致性",
                 "action_items": ["检查角色言行是否符合设定", "加强角色互动描写"]
-            })
-        
-        if evaluation.consistency_score and evaluation.consistency_score < 7:
-            recommendations.append({
-                "category": "consistency",
-                "priority": "medium",
-                "suggestion": "提高内容前后一致性",
-                "action_items": ["检查与前文情节的衔接", "验证角色设定的延续性"]
             })
         
         # 基于反馈项生成具体建议
