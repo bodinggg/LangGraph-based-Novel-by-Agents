@@ -33,7 +33,7 @@ def generate_master_outline_node(state: NovelState, outline_agent:OutlineGenerat
     extracted_json = extract_json(raw_master)
     if extracted_json:
         raw_master = extracted_json
-        print(f"【分卷】成功提取大纲JSON内容")
+        logger.info(f"【分卷】成功提取大纲JSON内容")
     return {
         "raw_master_outline": raw_master,
         "attempt":state.attempt+1
@@ -83,7 +83,7 @@ def validate_master_outline_node(state: NovelState) -> NovelState:
 
 def check_master_outline_node(state: NovelState) -> Literal["success", "retry", "failure"]:
     """检查大纲验证结果"""
-    print(f"检查大纲分卷验证结果...")
+    logger.info(f"检查大纲分卷验证结果...")
     if state.outline_validated_error is None:
         logger.info(f"【分卷】success:大纲检查成功, 转移至 generate_volume_outline 节点")
         return "success"
@@ -102,7 +102,7 @@ def generate_volume_outline_node(state:NovelState, outline_agent:OutlineGenerato
     extracted_json = extract_json(raw_chapters)
     if extracted_json:
         raw_chapters = extracted_json
-        print(f"【分章】成功提取大纲JSON内容")
+        logger.info(f"【分章】成功提取大纲JSON内容")
     return {
         "raw_volume_chapters": raw_chapters,
         "attempt":state.attempt+1
@@ -216,7 +216,7 @@ def generate_outline_node(state: NovelState, outline_agent: OutlineGeneratorAgen
     extracted_json = extract_json(raw_outline)
     if extracted_json:
         raw_outline = extracted_json
-        print(f"成功提取大纲JSON内容")
+        logger.info(f"成功提取大纲JSON内容")
     
     return {
         "raw_outline": raw_outline,
@@ -269,7 +269,7 @@ def validate_outline_node(state: NovelState) -> NovelState:
  
 def check_outline_node(state: NovelState) -> Literal["success", "retry", "failure"]:
     """检查大纲验证结果"""
-    print(f"检查大纲验证结果...")
+    logger.info(f"检查大纲验证结果...")
     if state.outline_validated_error is None:
         logger.info(f"【大纲】success:大纲检查成功, 转移至 generate_characters 节点")
         return "success"
@@ -294,7 +294,7 @@ def generate_characters_node(state: NovelState, character_agent: CharacterAgent)
     extracted_json = extract_json( raw_characters)
     if extracted_json:
         raw_characters = extracted_json
-        print(f"成功提取角色列表JSON内容")
+        logger.info(f"成功提取角色列表JSON内容")
     
     # 到生成角色档案了，大纲一定创建完成了，这时候去初始化存储器
     return {
@@ -356,7 +356,7 @@ def validate_characters_node(state: NovelState) -> NovelState:
 
 def check_characters_node(state:NovelState) -> Literal["success", "retry", "failure"]:
     """检查角色档案结果"""
-    print(f"检查角色档案验证结果...")
+    logger.info(f"检查角色档案验证结果...")
     if state.characters_validated_error is None:
             
         logger.info(f"【角色档案】success:角色档案检查成功, 转移至 write_chapter 节点...")
@@ -391,7 +391,7 @@ def write_chapter_node(state: NovelState, writer_agent: WriterAgent) -> NovelSta
     extracted_json = extract_json(raw_chapter)
     if extracted_json:
         raw_chapter = extracted_json
-        print("【单章撰写】成功提取大纲JSON内容")
+        logger.info("【单章撰写】成功提取大纲JSON内容")
     return {
         "raw_current_chapter": raw_chapter,
         "attempt": state.attempt + 1,
@@ -414,7 +414,7 @@ def validate_chapter_node(state:NovelState) -> NovelState:
         
         # 确保标题一致
         if chapter_content.title != chapter_outline.title:
-            print(f"警告: 生成的章节标题与大纲不一致, 已自动修正")
+            logger.info(f"警告: 生成的章节标题与大纲不一致, 已自动修正")
             chapter_content.title = chapter_outline.title
         
         # 存储当前章节草稿, 等待评审
@@ -466,7 +466,7 @@ def evaluate_chapter_node(state: NovelState, reflect_agent: ReflectAgent) -> Nov
         
     if extracted_json:
         raw_evaluation = extracted_json
-        print(f"成功评估！")
+        logger.info(f"成功评估！")
     
     return {
         "attmept": state.attempt+1,
@@ -513,6 +513,19 @@ def validate_evaluate_node(state:NovelState) -> NovelState:
             "evaluation_validated_error": f"评估失败: {str(e)}", 
         }
 
+# 评估报告节点
+def evaluate_report_node(state: NovelState, reflect_agent: ReflectAgent) -> NovelState:
+    """生成评估报告的节点"""
+    try:
+        reflect_agent.generate_evaluation_report(state)
+        return{
+            "report_error":None
+        }
+    except Exception as e:
+        logger.info(f"【内容评估】生成评估报告失败: {str(e)}")
+        return {
+            "report_error": f"生成评估报告失败: {str(e)}"
+        }
 
 def check_evaluation_node(state: NovelState) -> Literal["success", "retry", "failure"]:
     # 评估内容是否有错误
@@ -555,7 +568,7 @@ def generate_entities_node(state: NovelState, entity_agent: EntityAgent) -> Nove
     extracted_json = extract_json(raw_entities)
     if extracted_json:
         raw_entities = extracted_json
-        print("【实体识别】成功提取大纲JSON内容")
+        logger.info("【实体识别】成功提取大纲JSON内容")
 
     
     return {
