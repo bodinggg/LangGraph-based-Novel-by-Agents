@@ -1,653 +1,545 @@
+from typing import Dict, Any, List
 import json
-from typing import Literal
+from pathlib import Path
 
-from src.model import (
-    Character,
-    ChapterOutline,
-    VolumeOutline,  
-    NovelOutline,
-    ChapterContent,
-    QualityEvaluation,
-    EntityContent,
-)
-from src.agent import (
-    OutlineGeneratorAgent,
-    WriterAgent,
-    CharacterAgent,
-    ReflectAgent,
-    EntityAgent,
-) 
-from src.tool import extract_json
+from src.prompt import *
+from src.enhanced_prompts import get_prompt_template
+from src.feedback_processor import FeedbackProcessor, ContentReferencer
 from src.state import NovelState
-from src.log_config import loggers
-from src.config_loader import OutlineConfig
-from src.storage import NovelStorage
+from src.model import ChapterContent, ChapterOutline, QualityEvaluation, Character, NovelOutline
+from src.model_manager import ModelManager
+from src.config_loader import BaseConfig
+from src.thinking_logger import log_agent_thinking
+from src.evaluation_reporter import EvaluationReporter
 
-logger = loggers['node']
+
+
+# 大纲代理 - 用于生成统领大纲
+class OutlineGeneratorAgent:
+    def __init__(self, model_manager: ModelManager, config: BaseConfig):
+        self.model_manager = model_manager
+        self.config = config
+
+    # 总纲生成(卷册划分)    
+    def generate_master_outline(self, user_intent: str)->str:
+        min_chapters = self.config.min_chapters
+        volume = self.config.volume
+        master_prompt = MASTER_OUTLINE_PROMPT.format(
+            user_intent=user_intent, min_chapters=min_chapters, volume=volume
+        )
         
+        messages = [
+            {"role":"system", "content": OUTLINE_INSTRUCT},
+            {"role":"user", "content":master_prompt}
+        ]
 
-# -------------------- 大纲(分卷) -------------------- [生成 -> 验证 -> 状态判断]
-def generate_master_outline_node(state: NovelState, outline_agent:OutlineGeneratorAgent) -> NovelState:
-    logger.info(f"开始分卷生成小说大纲(第{state.attempt + 1}次尝试)")
-    raw_master = outline_agent.generate_master_outline(state.user_intent)
-    extracted_json = extract_json(raw_master)
-    if extracted_json:
-        raw_master = extracted_json
-        logger.info(f"【分卷】成功提取大纲JSON内容")
-    return {
-        "raw_master_outline": raw_master,
-        "attempt":state.attempt+1
-    }
+        response = self.model_manager.generate(messages, self.config)
+        
+        # 记录思考过程
+        log_agent_thinking(
+            agent_name="OutlineGeneratorAgent",
+            node_name="generate_master_outline",
+            prompt_content=messages,
+            response_content=response
+        )
+        
+        return response
+        
+    # 基于总纲生成单卷
+    def generate_volume_chapters(self, state: NovelState, volume_index:int) -> str:
+        master_outline = state.validated_outline.master_outline
+        current_volume = master_outline[volume_index]
+        start_idx, end_idx = map(int, current_volume.chapters_range.split('-'))
+        
+        
+        
+        # 提取前卷关键信息作为上下文
+        prev_context = ""
+        if volume_index > 0:
+            prev_volume = master_outline[volume_index - 1]
+            prev_context = f"前卷《{prev_volume.title}》结局：{prev_volume.key_turning_points[-1]}\n"
+            last_start_idx, last_end_idx = map(int, prev_volume.chapters_range.split('-'))
+            prev_context += f"前卷《{prev_volume.title}》共{last_end_idx-last_start_idx+1}章，{prev_volume.key_turning_points[-1]}。\n"
+            
+        prompt = VOLUME_OUTLINE_PROMPT.format(
+            prev_context=prev_context, 
+            current_volume=current_volume.title,
+            start_idx=start_idx, end_idx=end_idx,
+            num_chapter=end_idx-start_idx+1,
+            master_outline=state.validated_outline.master_outline,
+            character_list = ', '.join(state.validated_outline.characters),
+            outline_title = state.validated_outline.title,
+            outline_genre = state.validated_outline.genre,
+            outline_theme = state.validated_outline.theme,
+            outline_setting = state.validated_outline.setting,
+            outline_plot_summary = state.validated_outline.plot_summary
+        )
+        if state.outline_validated_error:
+            prompt = f"{prompt}之前的尝试{state.raw_volume_chapters}出现错误: {state.outline_validated_error}\n请修正错误并重新生成符合格式的大纲。\n"
+        messages = [
+            {"role":"system", "content": OUTLINE_INSTRUCT},
+            {"role":"user", "content":prompt}
+        ]
+        
+        response = self.model_manager.generate(messages, self.config)
+        
+        # 记录思考过程
+        log_agent_thinking(
+            agent_name="OutlineGeneratorAgent",
+            node_name="generate_volume_chapters",
+            prompt_content=messages,
+            response_content=response,
+            error_message=state.outline_validated_error
+        )
+        
+        return response
     
-def validate_master_outline_node(state: NovelState) -> NovelState:
-    try:
-        master_data = json.loads(state.raw_master_outline)
-        master_data["chapters"]=[]
-        validated_outline = NovelOutline(** master_data)
-        master_outline = validated_outline.master_outline
-        # 验证卷册章节范围合理性（总章节≥100）
-        total_chapters = sum(int(vol.chapters_range.split('-')[1]) - int(vol.chapters_range.split('-')[0]) + 1 
-                            for vol in master_outline)
-        if total_chapters < state.min_chapters:
-            raise ValueError(f"总章节数不足{state.min_chapters}（当前{total_chapters}章）")
+    def generate_outline(self, state: NovelState) -> str:
         
+        user_intent = state.user_intent
+        error_message = state.outline_validated_error
         
+        # 构建user信息
+        user_message = OUTLINE_PROMPT.format(user_intent=user_intent, min_chapters = self.config.min_chapters)
+        
+        if error_message:
+            user_message = f"之前的尝试出现错误: {error_message}\n请修正错误并重新生成符合格式的大纲。特别注意要用```json和```正确包裹JSON内容。\n{user_message}"
             
-        return {
-            "validated_outline": validated_outline,
-            "outline_validated_error": None,
-            "attempt":0,
-            "current_volume_index": 0  # 初始化当前卷索引
-            
-        }
+        # chat compelet
+        messages = [
+            {
+                "role":"system",
+                "content":OUTLINE_INSTRUCT
+            },
+            {
+                "role":"user",
+                "content":user_message
+            }
+        ]
         
-    except json.JSONDecodeError as e:
-        # 提供更详细的错误位置信息
+        response = self.model_manager.generate(messages, self.config)
         
-        error_lines = state.raw_master_outline.split('\n')
-        error_line = min(e.lineno - 1, len(error_lines) - 1) if e.lineno else 0
-        context = "\n".join(error_lines[max(0, error_line - 2):min(len(error_lines), error_line + 3)])
+        # 记录思考过程
+        log_agent_thinking(
+            agent_name="OutlineGeneratorAgent",
+            node_name="generate_outline",
+            prompt_content=messages,
+            response_content=response,
+            error_message=error_message
+        )
         
-        error_msg = (f"JSON解析错误: 在第{e.lineno}行, 第{e.colno}列 - {str(e)}\n"
-                    f"错误位置附近内容:\n{context}\n"
-                    "请检查括号是否匹配、是否使用双引号、逗号是否正确。")
-        logger.info(f"【分卷】 JSON格式解析错误:\n{error_msg}")
-        return {
-            "outline_validated_error": error_msg
-        }     
-    except Exception as e:
-        logger.info(f"【分卷】格式验证失败: {str(e)}")
-        return {
-            "outline_validated_error": f"大纲验证失败: {str(e)}"
-        }
+        return response
 
-def check_master_outline_node(state: NovelState) -> Literal["success", "retry", "failure"]:
-    """检查大纲验证结果"""
-    logger.info(f"检查大纲分卷验证结果...")
-    if state.outline_validated_error is None:
-        logger.info(f"【分卷】success:大纲检查成功, 转移至 generate_volume_outline 节点")
-        return "success"
-    elif state.attempt < state.max_attempts:
-        logger.info(f"【分卷】retry:验证失败, 将进行第{state.attempt + 1}次重试...")
-        return "retry"
-    else:
-        logger.info(f"【分卷】failure:大纲检查失败, 转移至 failure 节点")
-        return "failure"
+# 角色代理 - 用于生成角色档案
+class CharacterAgent:
+    def __init__(self, model_manager: ModelManager, config: BaseConfig):
+        self.model_manager = model_manager
+        self.config = config
         
-# -------------------- 大纲(分章) -------------------- [生成 -> 验证 -> 状态判断]   
-def generate_volume_outline_node(state:NovelState, outline_agent:OutlineGeneratorAgent) -> NovelState:
-    logger.info(f"开始分章生成卷{state.current_volume_index+1}小说大纲(第{state.attempt + 1}次尝试)")
-    volume_index = state.current_volume_index
-    raw_chapters = outline_agent.generate_volume_chapters(state, volume_index)
-    extracted_json = extract_json(raw_chapters)
-    if extracted_json:
-        raw_chapters = extracted_json
-        logger.info(f"【分章】成功提取大纲JSON内容")
-    return {
-        "raw_volume_chapters": raw_chapters,
-        "attempt":state.attempt+1
-    }
-
-def validate_volume_outline_node(state:NovelState) -> NovelState:
-    logger.info(f"开始分章验证卷{state.current_volume_index+1}小说大纲(第{state.attempt + 1}次尝试)")
-    try:
-        volume_index = state.current_volume_index
-        volume_data = json.loads(state.raw_volume_chapters)
-        chapters = [ChapterOutline(**chap) for chap in volume_data["chapters"]]
-        # 验证章节编号与总纲一致
-        master_vol = state.validated_outline.master_outline[volume_index]
-        start_idx, end_idx = map(int, master_vol.chapters_range.split('-'))
-        if len(chapters) != end_idx - start_idx + 1:
-            logger.info(f"【分章】卷{volume_index+1}章节数不符（应有{end_idx-start_idx+1}章，实际{len(chapters)}章）")
-            raise ValueError(f"卷{volume_index+1}章节数不符（应有{end_idx-start_idx+1}章，实际{len(chapters)}章）")
+    
+    def generate_characters(self, state: NovelState) -> str:
+        # 从大纲中提取角色相关信息
+        error_message = state.characters_validated_error
         
-        # 检查角色一致性
-        all_characters = set(state.validated_outline.characters)
-        for chapter in chapters:
+        outline = state.novel_storage.load_outline()
+        characters_list = outline.characters
+        
+        # 提取每个角色在章节中出现的关键事件
+        character_context = {}
+        for name in characters_list:
+            character_context[name] = []
+        
+        for chapter in outline.chapters:
             for char in chapter.characters_involved:
-                if char not in all_characters:
-                    logger.info(f"【分章】角色'{char}'不在角色列表[{state.validated_outline.characters}]中")
-                    raise ValueError(f"章节'{chapter.title}'中出现的角色'{char}'不在角色列表[{state.validated_outline.characters}]中")
-                
-        return {
-            "validated_chapters": chapters,
-            "outline_validated_error": None,
-            "attempt":0
-        }
-    except json.JSONDecodeError as e:
-        # 提供更详细的错误位置信息
-        error_lines = state.raw_volume_chapters.split('\n')
-        error_line = min(e.lineno - 1, len(error_lines) - 1) if e.lineno else 0
-        context = "\n".join(error_lines[max(0, error_line - 2):min(len(error_lines), error_line + 3)])
+                if char in character_context:
+                    character_context[char].append(f"在《{chapter.title}》中: {'; '.join(chapter.key_events)}")
         
-        error_msg = (f"JSON解析错误: 在第{e.lineno}行, 第{e.colno}列 - {str(e)}\n"
-                    f"错误位置附近内容:\n{context}\n"
-                    "请检查括号是否匹配、是否使用双引号、逗号是否正确。")
-        logger.info(f"【分章】 JSON格式解析错误:\n{error_msg}")
-        return {"outline_validated_error": error_msg}    
-    except Exception as e:
-        return {"outline_validated_error": str(e)}     
-
-def check_volume_outline_node(state: NovelState) -> Literal["success", "retry", "failure"]:
-    """检查大纲验证结果"""
-    logger.info(f"检查分章卷{state.current_volume_index+1}验证结果...")
-    if state.outline_validated_error is None:
-        logger.info(f"【分章，卷{state.current_volume_index+1}】success:大纲检查成功, 转移至 accept_outline 节点")
-        return "success"
-    elif state.attempt < state.max_attempts:
-        logger.info(f"【分章，卷{state.current_volume_index+1}】retry:验证失败, 将进行第{state.attempt + 1}次重试...")
-        return "retry"
-    else:
-        logger.info(f"【分章，卷{state.current_volume_index+1}】failure:大纲检查失败, 转移至 failure 节点")
-        return "failure"
-
-# 中继节点
-def volume2character(state:NovelState) -> NovelState:
-
-    return {"attempt":0}
-
-
-# 判断大纲是否创建结束
-# 接受章节节点
-def accept_outline_node(state: NovelState) -> NovelState:
-    """接受当前卷, 将其添加到大纲中章节列表并准备处理下一卷"""
-    # 合并到总章节列表
-    chapters = state.validated_chapters
-    validated_outline = state.validated_outline
-    validated_outline.chapters.extend(chapters)
-    current_volume_index = state.current_volume_index
-    # 重置卷相关状态, 准备处理下一卷
-    if current_volume_index == len(validated_outline.master_outline) - 1:
-        state.novel_storage = NovelStorage(state.validated_outline.title)
-        state.novel_storage.save_outline(state.validated_outline)
+        # 构建角色生成提示
+        context = f"小说标题: {outline.title}\n类型: {outline.genre}\n背景: {outline.setting}\n情节概要: {outline.plot_summary}\n\n"
+        context = "角色列表及他们在故事中的关键事件:\n"
+        for name, events in character_context.items():
+            context += f"- {name}: {'; '.join(events[:3])}\n"  # 取前3个关键事件
         
+        prompt = CHARACTER_PROMPT.format(
+            outline_title=outline.title,
+            outline_genre=outline.genre,
+            outline_setting=outline.setting,
+            outline_plot_summary=outline.plot_summary,
+            character_list=', '.join(characters_list),
+            context=context
+        )    
+        if error_message:
+            prompt += f"\n\n之前的尝试出现错误: {error_message}\n请修正错误并重新生成角色档案。"
+        
+        messages = [
+            {
+                "role":"user",
+                "content":prompt
+            }
+        ]
+        
+        response = self.model_manager.generate(messages, self.config)
+        
+        # 记录思考过程
+        log_agent_thinking(
+            agent_name="CharacterAgent",
+            node_name="generate_characters",
+            prompt_content=messages,
+            response_content=response,
+            error_message=error_message
+        )
+        
+        return response
     
-    return {
-        "novel_storage": state.novel_storage,
-        "validated_outline": validated_outline,
-        "current_volume_index": current_volume_index + 1,
-        "raw_volume_chapters": None
-    }
-
-
-def check_outline_completion_node(state: NovelState) -> Literal["continue", "complete"]:
-    """检查是否所有大纲的卷都已撰写完成"""
-    total_volumes = len(state.validated_outline.master_outline)
-    current_index = state.current_volume_index
-           
-    if current_index < total_volumes:
-        state.attempt = 0
-        logger.info("接受此卷, 将其添加到大纲中章节列表并准备处理下一卷")
-        return "continue"
-    else:
-        
-        logger.info("接受此卷, 已经完成所有大纲中章节列表")
-        
-        return "complete"
-
-# -------------------- 大纲 -------------------- [生成 -> 验证 -> 状态判断]
-def generate_outline_node(state: NovelState, outline_agent: OutlineGeneratorAgent) -> NovelState:
-    """生成小说大纲的节点"""
-    logger.info(f"开始生成小说大纲(第{state.attempt + 1}次尝试)")
+# 写作代理 - 用于单章撰写
+class WriterAgent:
+    def __init__(self, model_manager: ModelManager, config: BaseConfig):
+        self.model_manager = model_manager
+        self.config = config
+        # 初始化反馈处理器
+        self.feedback_processor = FeedbackProcessor(max_feedback_tokens=800)
+        self.content_referencer = ContentReferencer()
     
-    raw_outline = outline_agent.generate_outline(state)
-
-    # 尝试提取JSON部分
-    extracted_json = extract_json(raw_outline)
-    if extracted_json:
-        raw_outline = extracted_json
-        logger.info(f"成功提取大纲JSON内容")
-    
-    return {
-        "raw_outline": raw_outline,
-        "attempt": state.attempt + 1
-    }
-
-
-def validate_outline_node(state: NovelState) -> NovelState:
-    """验证小说大纲的节点"""
-    logger.info(f"开始生成小说大纲(第{state.attempt + 1}次尝试)")
-    try:
-        # 解析JSON
-        outline_data = json.loads(state.raw_outline)
-        # 验证数据结构
-        validated_outline = NovelOutline(** outline_data)
+    def write_chapter(self, state: NovelState) -> str:
+        """撰写单章内容，增强反馈处理"""
         
-        # 检查角色一致性
-        all_characters = set(validated_outline.characters)
-        for chapter in validated_outline.chapters:
-            for char in chapter.characters_involved:
-                if char not in all_characters:
-                    logger.info(f"【大纲】角色'{char}'不在角色列表[{validated_outline.characters}]中")
-                    raise ValueError(f"章节'{chapter.title}'中出现的角色'{char}'不在角色列表[{state.validated_outline.characters}]中")
+        error_message = state.current_chapter_validated_error
+        characters = state.novel_storage.load_characters()
+        outline = state.novel_storage.load_outline()
         
-        if len(outline_data['chapters']) < OutlineConfig.min_chapters:
-            raise ValueError(f"章节数不足，至少需要{OutlineConfig.min_chapters}个章节，实际生成了{len(outline_data.chapters)}个章节")
-        state.novel_storage = NovelStorage(validated_outline.title)
-        state.novel_storage.save_outline(validated_outline) 
-        return {
-            "novel_storage": state.novel_storage,
-            "validated_outline": validated_outline,
-            "attempt":0,
-            "outline_validated_error": None
-        }
-    except json.JSONDecodeError as e:
-        # 提供更详细的错误位置信息
-        
-        error_lines = state.raw_outline.split('\n')
-        error_line = min(e.lineno - 1, len(error_lines) - 1) if e.lineno else 0
-        context = "\n".join(error_lines[max(0, error_line - 2):min(len(error_lines), error_line + 3)])
-        
-        error_msg = (f"JSON解析错误: 在第{e.lineno}行, 第{e.colno}列 - {str(e)}\n"
-                    f"错误位置附近内容:\n{context}\n"
-                    "请检查括号是否匹配、是否使用双引号、逗号是否正确。")
-        logger.info(f"【大纲】 JSON格式解析错误:\n{error_msg}")
-        return {"outline_validated_error": error_msg, "validated_outline": None}
-    except Exception as e:
-        logger.info(f"【大纲】格式验证失败: {str(e)}")
-        return {"outline_validated_error": f"大纲验证失败: {str(e)}", "validated_outline": None}
- 
-def check_outline_node(state: NovelState) -> Literal["success", "retry", "failure"]:
-    """检查大纲验证结果"""
-    logger.info(f"检查大纲验证结果...")
-    if state.outline_validated_error is None:
-        logger.info(f"【大纲】success:大纲检查成功, 转移至 generate_characters 节点")
-        return "success"
-    elif state.attempt < state.max_attempts:
-        logger.info(f"【大纲】retry:验证失败, 将进行第{state.attempt + 1}次重试...")
-        return "retry"
-    else:
-        logger.info(f"【大纲】failure:大纲检查失败, 转移至 failure 节点")
-        return "failure"
- 
-# -------------------- 角色档案 -------------------- [生成 -> 验证 -> 状态判断]
-def generate_characters_node(state: NovelState, character_agent: CharacterAgent) -> NovelState:
-    """生成详细角色档案的节点"""
-    logger.info(f"正在生成角色档案(第{state.attempt + 1}次尝试)...")
-
-    
-
-    # 调用角色代理生成角色档案
-    raw_characters = character_agent.generate_characters(state)
-
-    # 尝试提取JSON部分
-    extracted_json = extract_json( raw_characters)
-    if extracted_json:
-        raw_characters = extracted_json
-        logger.info(f"成功提取角色列表JSON内容")
-    
-    # 到生成角色档案了，大纲一定创建完成了，这时候去初始化存储器
-    return {
-        "validated_outline":None,
-        "row_characters": raw_characters,
-        "attempt": state.attempt + 1
-    }
-
-def validate_characters_node(state: NovelState) -> NovelState:
-    """验证角色档案格式"""
-    logger.info("正在验证角色档案格式...")
-    try:
-        # 解析JSON
-        characters_data = json.loads(state.row_characters)
-        # 验证每个角色是否符合Character模型
-        validated_characters = []
-        for char_data in characters_data:
-            try:
-                character = Character(**char_data)
-                validated_characters.append(character)
-            except Exception as e:
-                logger.info(f"【角色档案】 角色'{char_data.name}'验证失败: {str(e)}")
-                return {"characters_validated_error": f"角色'{char_data.name}'验证失败: {str(e)}"}
-        
-        # 检查是否所有角色都已生成
-        outline_characters = set(state.novel_storage.load_outline().characters)
-        generated_names = set(char.name for char in validated_characters)
-        missing = outline_characters - generated_names
-        if missing:
-            logger.info(f"【角色档案】以下角色未生成详细档案: {', '.join(missing)}")
-            return {"characters_validated_error": f"以下角色未生成详细档案: {', '.join(missing)}"}
-        
-        # 虽然这种形式不好，但是目前不想大拆重改，先叠shit山吧
-        state.novel_storage.save_characters(validated_characters)
-        
-        return {
-            "validated_characters": validated_characters,
-            "attempt":0,
-            "characters_validated_error": None
-        }
-        
-    except json.JSONDecodeError as e:
-        error_lines = state.row_characters.split('\n')
-        error_line = min(e.lineno - 1, len(error_lines) - 1) if e.lineno else 0
-        context = "\n".join(error_lines[max(0, error_line - 2):min(len(error_lines), error_line + 3)])
-        
-        error_msg = (f"JSON解析错误: 在第{e.lineno}行, 第{e.colno}列 - {str(e)}\n"
-                    f"错误位置附近内容:\n{context}\n"
-                    "请检查括号是否匹配、是否使用双引号、逗号是否正确。")
-        logger.info(f"【角色档案】角色生成JSON格式错误")
-        
-        
-        return {
-            "characters_validated_error": error_msg
-        }
-    except Exception as e:
-        logger.info(f"【角色档案】角色生成失败: {str(e)}")
-        return {"characters_validated_error": f"角色生成失败: {str(e)}"}
-
-def check_characters_node(state:NovelState) -> Literal["success", "retry", "failure"]:
-    """检查角色档案结果"""
-    logger.info(f"检查角色档案验证结果...")
-    if state.characters_validated_error is None:
-            
-        logger.info(f"【角色档案】success:角色档案检查成功, 转移至 write_chapter 节点...")
-        return "success"
-    elif state.attempt < state.max_attempts:
-        logger.info(f"【角色档案】retry:角色档案验证失败,  重新生成角色档案...")
-        return "retry"
-    else:
-        logger.info(f"【角色档案】failure:角色档案验证失败, 达到最大重试次数, 结束写作...")
-        return "failure"
-        
-# -------------------- 章节写作 -------------------- [生成 -> 验证 -> 状态判断]
-def write_chapter_node(state: NovelState, writer_agent: WriterAgent) -> NovelState:
-    """撰写单章内容的节点"""
-    
-    # 获取当前状态中的必要信息
-    revision_feedback = state.validated_evaluation
-    current_index = state.current_chapter_index
-    outline = state.novel_storage.load_outline()
-      
-    # 获取当前章节大纲
-    chapter_outline = outline.chapters[current_index]
-    if revision_feedback:
-        logger.info(f"根据反馈修改第{current_index + 1}章: {chapter_outline.title}(第{state.evaluate_attempt + 1}次修改)")
-    else:
-        logger.info(f"正在撰写第{current_index + 1}章: {chapter_outline.title}(第{state.attempt+1}次重写)")
-
-    # 调用写作代理生成章节内容
-    raw_chapter = writer_agent.write_chapter(state)
-        
-    # 提取并解析JSON
-    extracted_json = extract_json(raw_chapter)
-    if extracted_json:
-        raw_chapter = extracted_json
-        logger.info("【单章撰写】成功提取大纲JSON内容")
-    return {
-        "raw_current_chapter": raw_chapter,
-        "attempt": state.attempt + 1,
-        "evaluate_attempt": state.evaluate_attempt + 1 
-    }   
-    
-def validate_chapter_node(state:NovelState) -> NovelState:
-    
-    try:
+        # 调用当前章节涉及角色的角色档案
+        characters = [c for c in characters if c.name in outline.chapters[state.current_chapter_index].characters_involved]
         current_chapter_index = state.current_chapter_index
-        chapter_outline = state.novel_storage.load_outline().chapters[current_chapter_index]
         
-        raw_current_chapter = state.raw_current_chapter
+        # 获取评估反馈
+        evaluation = state.validated_evaluation
+        current_content = state.validated_chapter_draft
         
-        # 加载当前章节内容
-        chapter_data = json.loads(raw_current_chapter)
+        # 处理反馈（如果存在）
+        processed_feedback = None
+        if evaluation and not evaluation.passes:
+            processed_feedback = self.feedback_processor.process_evaluation(
+                evaluation, 
+                current_content, 
+                state.evaluate_attempt
+            )
         
-        # 验证章节内容
-        chapter_content = ChapterContent(** chapter_data)
+        # 根据反馈确定写作策略
+        strategy = "maintain_current"  # 默认策略
+        if processed_feedback:
+            strategy = processed_feedback.revision_strategy
         
-        # 确保标题一致
-        if chapter_content.title != chapter_outline.title:
-            logger.info(f"警告: 生成的章节标题与大纲不一致, 已自动修正")
-            chapter_content.title = chapter_outline.title
+        # 获取对应的提示词模板
+        prompt_template = get_prompt_template(strategy)
         
-        # 存储当前章节草稿, 等待评审
-        return {
-            "validated_chapter_draft": chapter_content,
-            "current_chapter_index":current_chapter_index,
-            "attempt":0,
-            "current_chapter_validated_error": None
-        }
-    except json.JSONDecodeError as e:
-        error_lines = state.raw_current_chapter.split('\n')
-        error_line = min(e.lineno - 1, len(error_lines) - 1) if e.lineno else 0
-        context = "\n".join(error_lines[max(0, error_line - 2):min(len(error_lines), error_line + 3)])
+        # 准备基础参数
+        base_params = self._prepare_base_params(state, characters, outline, current_chapter_index)
         
-        error_msg = (f"JSON解析错误: 在第{e.lineno}行, 第{e.colno}列 - {str(e)}\n"
-                    f"错误位置附近内容:\n{context}\n"
-                    "请检查括号是否匹配、是否使用双引号、逗号是否正确。")
-        logger.info(f"【单章撰写】生成JSON格式错误")
-        return {
-            "current_chapter_validated_error": error_msg
-        }    
-    except Exception as e:
-        logger.info(f"【单章撰写】章节撰写失败: {str(e)}")
-        return {"current_chapter_validated_error": f"章节撰写失败: {str(e)}"}
+        # 根据策略生成提示词
+        if strategy == "maintain_current" or not processed_feedback:
+            prompt = self._generate_base_prompt(prompt_template, base_params, error_message)
+        else:
+            prompt = self._generate_revision_prompt(
+                prompt_template, base_params, processed_feedback, current_content
+            )
+        messages = [{"role": "user", "content": prompt}]
+        
+        response = self.model_manager.generate(messages, self.config)
+        
+        # 记录思考过程
+        log_agent_thinking(
+            agent_name="WriterAgent",
+            node_name="write_chapter",
+            prompt_content=messages,
+            response_content=response,
+            error_message=error_message
+        )
+        
+        return response
 
-def check_chapter_node(state:NovelState) -> Literal["success", "retry", "failure"]: # 内容结构的成功与失败, 不用于Reflect
-    if state.current_chapter_validated_error is None:
-        logger.info("【单章撰写】success:章节撰写成功, 转移至 evaluate_chapter 节点...")
-        return "success"
-    elif state.attempt < state.max_attempts:
-        logger.info("【单章撰写】retry:章节撰写失败, 重新撰写")
-        return "retry"
-    else:
-        logger.info(f"【单章撰写】failure:章节撰写失败, 达到最大重试次数, 结束流程")
-        return "failure"
+        
     
-# -------------------- 评估 -------------------- [评估[生成 -> 验证 -> 状态判断] -> 状态判断]
-def evaluate_chapter_node(state: NovelState, reflect_agent: ReflectAgent) -> NovelState:
-    """评估章节质量的节点"""
-    current_index = state.current_chapter_index
-    outline = state.novel_storage.load_outline()
-    # 获取当前章节大纲
-    chapter_outline = outline.chapters[current_index]
-    logger.info(f"正在评估第{current_index + 1}章: {chapter_outline.title}(第{state.attempt+1}次生成评估)(第{state.evaluate_attempt+1}次评估该章)")
-    # 调用反思代理进行评估
-    raw_evaluation = reflect_agent.evaluate_chapter(state)
-    # 提取并解析JSON
-    extracted_json = extract_json(raw_evaluation)
+    def _prepare_base_params(self, state: NovelState, characters: List, outline, current_chapter_index: int) -> Dict:
+        """准备基础参数，简化promt注入变量逻辑"""
+        pre_chapter = state.novel_storage.load_chapter(current_chapter_index).content[-100:] if current_chapter_index > 0 else "无"
+        pre_entity = state.novel_storage.load_entity(current_chapter_index-1) if current_chapter_index > 0 else None
         
-    if extracted_json:
-        raw_evaluation = extracted_json
-        logger.info(f"成功评估！")
+        return {
+            "genre": outline.genre,
+            "outline_setting": outline.setting,
+            "outline_title": outline.title,
+            "outline_theme": outline.theme,
+            "outline_plot_summary": outline.plot_summary,
+            "character_list": ', '.join(outline.characters),
+            "pre_summary": outline.chapters[current_chapter_index-1].summary if current_chapter_index > 0 else "无",
+            "pre_context": pre_chapter,
+            "post_summary": outline.chapters[current_chapter_index+1].summary if current_chapter_index < len(outline.chapters)-1 else "无",
+            "chapter_outline_title": outline.chapters[current_chapter_index].title,
+            "chapter_outline_key_events": ', '.join(outline.chapters[current_chapter_index].key_events),
+            "chapter_outline_setting": outline.chapters[current_chapter_index].setting,
+            "chapter_outline_summary": outline.chapters[current_chapter_index].summary,
+            "character": characters,
+            "current_chapter_idx": current_chapter_index,
+            "num_chapters": len(outline.chapters),
+            "word_count": 3000,
+            "pre_entity": pre_entity
+        }
     
-    return {
-        "attmept": state.attempt+1,
-
-        "raw_chapter_evaluation": raw_evaluation
-    }
+    def _generate_base_prompt(self, template: str, params: Dict, error_message: str = None) -> str:
+        """生成基础写作提示词"""
+        prompt = template.format(**params)
+        
+        if error_message:
+            prompt += f"\n\n错误信息: {error_message}"
+            
+        return prompt
     
-def validate_evaluate_node(state:NovelState) -> NovelState:
-    try:
-        current_index = state.current_chapter_index
+    def _generate_revision_prompt(self, template: str, params: Dict, 
+                                processed_feedback, current_content) -> str:
+        """生成修改版提示词"""
         
-        # 尝试解析为json格式
-        evalutaion_data = json.loads(state.raw_chapter_evaluation)
+        # 根据策略添加特定参数
+        revision_params = params.copy()
         
-        evaluation = QualityEvaluation(**evalutaion_data)
+        if processed_feedback.revision_strategy == "targeted_revision":
+            revision_params.update({
+                "original_title": current_content.title,
+                "original_content": current_content.content[:2000],  # 限制长度
+                "feedback_summary": processed_feedback.summary,
+                "key_improvements": self._format_key_improvements(processed_feedback.evaluation.feedback_items),
+                "revision_strategy": processed_feedback.revision_strategy
+            })
+        elif processed_feedback.revision_strategy == "expand_content":
+            revision_params.update({
+                "original_title": current_content.title,
+                "original_content": current_content.content[:1500],
+                "current_length": len(current_content.content),
+                "expansion_needed": max(0, 3000 - len(current_content.content)),
+                "expansion_strategy": "丰富细节描写，增加角色互动，扩展情节发展"
+            })
+        elif processed_feedback.revision_strategy == "character_focused":
+            revision_params.update({
+                "original_content": current_content.content[:2000],
+                "character_feedback": self._extract_character_feedback(processed_feedback.evaluation.feedback_items),
+                "character_profiles": self._format_character_profiles(params["character"])
+            })
+        elif processed_feedback.revision_strategy == "plot_focused":
+            revision_params.update({
+                "original_content": current_content.content[:2000],
+                "plot_feedback": self._extract_plot_feedback(processed_feedback.evaluation.feedback_items)
+            })
+        elif processed_feedback.revision_strategy == "comprehensive_rewrite":
+            revision_params.update({
+                "feedback_history": self._format_feedback_history(processed_feedback)
+            })
         
-        # 输出评估结果摘要
-        logger.info(f"第{current_index + 1}章评估结果: 评分 {evaluation.score}/10, {'通过' if evaluation.passes else '未通过'}")
-        if not evaluation.passes:
-            logger.info(f"主要问题: {evaluation.overall_feedback}")
-        
-        return {
-            "validated_evaluation" : evaluation,
-            "attempt":0,
-            "evaluation_validated_error": None
-        }
-        
-    except json.JSONDecodeError as e:
-        # 提供更详细的错误位置信息
-        error_lines = state.raw_chapter_evaluation.split('\n')
-        error_line = min(e.lineno - 1, len(error_lines) - 1) if e.lineno else 0
-        context = "\n".join(error_lines[max(0, error_line - 2):min(len(error_lines), error_line + 3)])
-        
-        error_msg = (f"JSON解析错误: 在第{e.lineno}行, 第{e.colno}列 - {str(e)}\n"
-                    f"错误位置附近内容:\n{context}\n"
-                    "请检查括号是否匹配、是否使用双引号、逗号是否正确。")
-        logger.info(f"【内容评估】生成JSON格式错误")
-        return {
-            "evaluation_validated_error": error_msg, 
-        }
-    except Exception as e:
-        logger.info(f"【内容评估】评估失败: {str(e)}")
-        return {
-            "evaluation_validated_error": f"评估失败: {str(e)}", 
-        }
+        return template.format(**revision_params)
+    
+    def _format_key_improvements(self, feedback_items: List) -> str:
+        """格式化关键改进点"""
+        improvements = []
+        for i, item in enumerate(feedback_items[:3], 1):  # 最多3个
+            improvements.append(f"{i}. {item.issue} - 建议：{item.suggestion}")
+        return "\n".join(improvements)
+    
+    def _extract_character_feedback(self, feedback_items: List) -> str:
+        """提取角色相关反馈"""
+        character_issues = [item for item in feedback_items 
+                          if item.category == "character"]
+        if character_issues:
+            return "; ".join([item.suggestion for item in character_issues[:2]])
+        return "角色表现需要改进"
+    
+    def _extract_plot_feedback(self, feedback_items: List) -> str:
+        """提取情节相关反馈"""
+        plot_issues = [item for item in feedback_items 
+                      if item.category == "plot"]
+        if plot_issues:
+            return "; ".join([item.suggestion for item in plot_issues[:2]])
+        return "情节逻辑需要改进"
+    
+    def _format_character_profiles(self, characters: List) -> str:
+        """格式化角色档案"""
+        profiles = []
+        for char in characters[:3]:  # 最多3个角色
+            profiles.append(f"角色：{char.name}\n性格：{char.personality}\n目标：{', '.join(char.goals[:2])}")
+        return "\n\n".join(profiles)
+    
+    def _format_feedback_history(self, processed_feedback) -> str:
+        """格式化反馈历史"""
+        return f"主要问题：{processed_feedback.summary}\n关键改进点：{self._format_key_improvements(processed_feedback.evaluation.feedback_items)}"
 
-# 评估报告节点
-def evaluate_report_node(state: NovelState, reflect_agent: ReflectAgent) -> NovelState:
-    """生成评估报告的节点"""
-    try:
-        reflect_agent.generate_evaluation_report(state)
-        return{
-            "report_error":None
-        }
-    except Exception as e:
-        logger.info(f"【内容评估】生成评估报告失败: {str(e)}")
-        return {
-            "report_error": f"生成评估报告失败: {str(e)}"
-        }
-
-def check_evaluation_node(state: NovelState) -> Literal["success", "retry", "failure"]:
-    # 评估内容是否有错误
-    if state.evaluation_validated_error is None:
-        logger.info(f"【内容评估】success:评估内容正确, 转移至 evaluate2wirter 节点...")
-        return "success"
-    elif state.attempt < state.max_attempts:
-        logger.info(f"【内容评估】retry:评估内容失败,  重新生成评估内容...")
-        return "retry"
-    else:
-        logger.info(f"【内容评估】failure:章节撰写失败, 达到最大重试次数, 结束流程")
-        return "failure"
-        
-def evaluation_to_chapter_node(state:NovelState) -> NovelState:
-    logger.info(f"评估内容没问题, 重写本章节:{state.validated_evaluation}")
-    return {
-        "attempt":0
-    }
-
-# 检查评估章节节点
-def check_evaluation_chapter_node(state: NovelState) -> Literal["accept", "revise", "force_accpet"]:
-    """检查章节评估结果, 决定是接受、修改还是强制接受"""
-    evaluation = state.validated_evaluation
-    if evaluation.passes:
-        logger.info(f"当前第{state.current_chapter_index+1}章<{state.validated_chapter_draft.title}>通过")
-        return "accept"  
-    elif state.evaluate_attempt < state.max_attempts:
-        logger.info(f"当前第{state.current_chapter_index+1}章<{state.validated_chapter_draft.title}>, 接受修改意见, 重写本章")
-        return "revise"
-    else:
-        logger.info(f"达到验证的最大次数, 强制接受本章")
-        return "force_accpet"
-
-# ---------------------- 实体识别 ---------------------- [生成 -> 验证 -> 状态判断]
-def generate_entities_node(state: NovelState, entity_agent: EntityAgent) -> NovelState:
-    """生成实体列表的节点"""
-    logger.info(f"正在生成实体列表(第{state.attempt + 1}次尝试)...")
-    raw_entities = entity_agent.generate_entities(state)
-    # 提取并解析JSON
-    extracted_json = extract_json(raw_entities)
-    if extracted_json:
-        raw_entities = extracted_json
-        logger.info("【实体识别】成功提取大纲JSON内容")
+    def _write_expansion(self, state: NovelState) -> str:
+        """扩写"""
+        pass
 
     
-    return {
-        "attempt": state.attempt + 1,
-        "raw_entities": raw_entities
-    }
 
-def validate_entities_node(state: NovelState) -> NovelState:
-    """验证实体列表格式"""
-    logger.info("正在验证实体列表格式...")
-    try:
-        entities_data = json.loads(state.raw_entities)
-        entities = EntityContent(**entities_data)
+# 反思代理 - 用于评审章节质量
+class ReflectAgent:
+    def __init__(self, model_manager: ModelManager, config: BaseConfig):
+        self.model_manager = model_manager
+        self.config = config
+        self.system_prompt = REFLECT_PROMPT
+        # 初始化评测报告生成器
+        self.evaluation_reporter = EvaluationReporter()
         
-        logger.info(f"第{state.current_chapter_index + 1}章实体加载完成")
-        # 存储实体文件到对应章节
-        state.novel_storage.save_entity(state.current_chapter_index,entities)
-        return {
-            "attempt": 0,
-            "entities_validated_error": None
-        }
-    except json.JSONDecodeError as e:
-        error_lines = state.raw_entities.split('\n')
-        error_line = min(e.lineno - 1, len(error_lines) - 1) if e.lineno else 0
-        context = "\n".join(error_lines[max(0, error_line - 2):min(len(error_lines), error_line + 3)])
+    
+    def evaluate_chapter(self, state: NovelState) -> str:
+        """评估章节质量并提供反馈 - 增强版智能化评测"""
+        error_message = state.evaluation_validated_error
+        outline = state.novel_storage.load_outline()
+        current_chapter_index = state.current_chapter_index
+        chapter_content = state.validated_chapter_draft
+        chapter_outline = outline.chapters[current_chapter_index]
+        characters = state.novel_storage.load_characters()
+         
+        involved_chars = [char for char in characters 
+                         if char.name in chapter_outline.characters_involved]
         
-        error_msg = (f"JSON解析错误: 在第{e.lineno}行, 第{e.colno}列 - {str(e)}\n"
-                    f"错误位置附近内容:\n{context}\n"
-                    "请检查括号是否匹配、是否使用双引号、逗号是否正确。")
-        logger.info(f"【实体识别】生成JSON格式错误")
-        return {
-            "entities_validated_error": error_msg
+        # 构建增强版评估上下文 - 符合软件测试领域的标准化评测要求
+        context = self._build_evaluation_context(
+            chapter_content, chapter_outline, involved_chars, outline, current_chapter_index
+        )
+        
+        if error_message:
+            context += f"\n\n之前的评估错误: {error_message}"
+
+        user_message = f"请基于以下标准化评测框架对章节内容进行全面评估:\n{context}\n请生成符合格式的评估JSON:"
+        
+        messages = [
+            {
+                "role":"system",
+                "content":self.system_prompt
+            },
+            {
+                "role":"user",
+                "content":user_message
+            }
+        ]
+        
+        response = self.model_manager.generate(messages, self.config)
+        
+        # 记录思考过程
+        log_agent_thinking(
+            agent_name="ReflectAgent",
+            node_name="evaluate_chapter",
+            prompt_content=messages,
+            response_content=response,
+            error_message=error_message
+        )
+        
+        return response
+
+    def generate_evaluation_report(self, state:NovelState):
+        """生成评测报告"""
+        chapter_content = state.validated_chapter_draft
+        response = state.validated_evaluation
+        self._generate_evaluation_report(state, chapter_content, response)
+
+        
+    def _build_evaluation_context(self, chapter_content: ChapterContent, chapter_outline: ChapterOutline, involved_chars:List[Character], outline:NovelOutline, current_chapter_index: int):
+        """构建标准化评测上下文"""
+        context = "=== 标准化内容质量评测框架 ===\n\n"
+        
+        # 1. 基础信息
+        context += "【基础信息】\n"
+        context += f"章节标题: {chapter_content.title}\n"
+        context += f"章节大纲摘要: {chapter_outline.summary}\n"
+        context += f"关键事件要求: {', '.join(chapter_outline.key_events)}\n"
+        context += f"实际长度: {len(chapter_content.content)}字符\n\n"
+        
+        # 2. 角色一致性检查
+        context += "【角色一致性检查】\n"
+        for char in involved_chars:
+            context += f"- {char.name}: 性格({char.personality}) | 目标({', '.join(char.goals[:2])})\n"
+        context += "\n"
+        
+        # 3. 情节连贯性检查
+        context += "【情节连贯性检查】\n"
+        if current_chapter_index > 0:
+            prev_chapter = outline.chapters[current_chapter_index - 1]
+            context += f"前章关键事件: {', '.join(prev_chapter.key_events)}\n"
+        if current_chapter_index < len(outline.chapters) - 1:
+            next_chapter = outline.chapters[current_chapter_index + 1]
+            context += f"后章关键事件: {', '.join(next_chapter.key_events)}\n"
+        context += "\n"
+        
+        # 4. 内容完整性检查
+        context += "【内容完整性检查】\n"
+        context += f"大纲要求的关键事件数量: {len(chapter_outline.key_events)}\n"
+        context += f"大纲要求的角色数量: {len(chapter_outline.characters_involved)}\n"
+        context += "\n"
+        
+        # 5. 评测标准说明
+        context += "【评测标准说明】\n"
+        context += "一致性评分: 评估内容与大纲、前文、角色设定的符合程度\n"
+        context += "连贯性评分: 评估情节逻辑、过渡自然度、因果关系\n"
+        context += "完整性评分: 评估关键事件覆盖、角色表现、场景描写\n"
+        context += "正确性评分: 评估事实准确性、逻辑合理性\n"
+        context += "\n"
+        
+        # 6. 待评测内容
+        context += "【待评测内容】\n"
+        context += chapter_content.content
+
+        return context
+    
+    def _generate_evaluation_report(self, state: NovelState, chapter_content: ChapterContent, evaluation_response: str):
+        """生成标准化评测报告 - 展示EvaluationReporter的实际使用"""
+        
+        # 准备评测数据
+        evaluation_data = {
+            "chapter_title": chapter_content.title,
+            "chapter_index": state.current_chapter_index,
+            "evaluation_response": evaluation_response,
+            "evaluate_attempt": state.evaluate_attempt
         }
-    except Exception as e:
-        logger.info(f"【实体识别】实体生成失败: {str(e)}")
-        return {
-            "entities_validated_error": f"实体生成失败: {str(e)}"
-        }
-
-def check_entities_node(state: NovelState) -> Literal["success", "retry", "failure"]:
-    """检查实体列表生成结果"""
-    if state.entities_validated_error is None:
-        logger.info(f"【实体识别】success:实体列表生成成功, 转移至 write_entities 节点...")
-        return "success"
-    elif state.attempt < state.max_attempts:
-        logger.info(f"【实体识别】retry:实体列表生成失败,  重新生成实体列表...")
-        return "retry"
-    else:
-        logger.info(f"【实体识别】failure:实体列表生成失败, 达到最大重试次数, 结束流程")
-        return "failure"
-    
-# 接受章节节点
-def accept_chapter_node(state: NovelState) -> NovelState:
-    """接受章节, 将其添加到章节列表并准备处理下一章节"""
-    current_draft = state.validated_chapter_draft
-    current_index = state.current_chapter_index
-    
-
-    state.novel_storage.save_chapter(chapter_index=current_index+1, chapter= current_draft)
-    logger.info(f"章节{current_index+1}已接受, 已添加到本地")
-    # 重置章节相关状态, 准备处理下一章节
-    return {
-        "current_chapter_index": current_index + 1,
-        "evaluate_attempt":0,
-        "validated_chapter_draft": None,
-        "validated_evaluation": None
-    }
+        
+        # 使用EvaluationReporter生成报告
+        report = self.evaluation_reporter.generate_evaluation_report(state.validated_evaluation, evaluation_data)
+ 
+        # 保存报告到result目录
+        report_filename = f"evaluation_report_chapter_{state.current_chapter_index}.json"
+        report_path = f"result/{state.novel_storage.load_outline().title}_storage/evaluate_reports"
+        report_path = Path(report_path)
+        report_path.mkdir(exist_ok=True)
+        report_path = report_path / report_filename
+        self.evaluation_reporter.save_report(report, report_path)
 
 
-def check_chapter_completion_node(state: NovelState) -> Literal["continue", "complete"]:
-    """检查是否所有章节都已撰写完成"""
-    
-    total_chapters = len(state.novel_storage.load_outline().chapters)
-    current_index = state.current_chapter_index
-    
-    if current_index < total_chapters:
-        state.attempt = 0
-        logger.info("接受章节, 将其添加到章节列表并准备处理下一章节")
-        return "continue"
-    else:
-        logger.info("接受章节, 已经完成所有章节写作")
-        return "complete"
+# 实体代理 - 用于控制情节发展
+class EntityAgent:
+    def __init__(self, model_manager: ModelManager, config: BaseConfig):
+        self.model_manager = model_manager
+        self.config = config
+        self.system_prompt = WORLD_SYS_PROMPT
+        
+    def generate_entities(self, state: NovelState) :
+        """根据章节内容添加动态实体信息，帮助维护情节一致性"""
+ 
+        text_content = state.validated_chapter_draft.content
+        chapter_name = state.validated_chapter_draft.title
+        
+        messages = [
+            {
+                "role":"system",
+                "content":self.system_prompt
+            },
+            {
+                "role":"user",
+                "content":WORLD_USER_PROMPT.format(chapter_name=chapter_name, text_content=text_content)
+            }
+        ]
+        
+        response = self.model_manager.generate(messages, self.config)
+        
+        # 记录思考过程
+        log_agent_thinking(
+            agent_name="EntityAgent",
+            node_name="generate_entities",
+            prompt_content=messages,
+            response_content=response
+        )
+        
+        return response
