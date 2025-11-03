@@ -114,7 +114,7 @@ def create_workflow(model_config: ModelConfig, Agent_config: BaseConfig= None) -
     workflow.add_node("chapter_feedback", chapter_feedback_node)
     workflow.add_node("process_chapter_feedback", process_chapter_feedback_node)
     
-    # 新增：实体识别
+    # 实体识别
     workflow.add_node("generate_entities",
                       lambda state: generate_entities_node(state, entity_agent))
     workflow.add_node("validate_entities", validate_entities_node)
@@ -123,6 +123,8 @@ def create_workflow(model_config: ModelConfig, Agent_config: BaseConfig= None) -
     workflow.add_node("evaluate_chapter",
                       lambda state: evaluate_chapter_node(state, reflect_agent))
     workflow.add_node("validate_evaluate", validate_evaluate_node)
+    workflow.add_node("evaluate_report", 
+                      lambda state: evaluate_report_node(state, reflect_agent))
     
     workflow.add_node("evaluate2wirte", evaluation_to_chapter_node)
     
@@ -254,8 +256,11 @@ def create_workflow(model_config: ModelConfig, Agent_config: BaseConfig= None) -
     
     # 评估
     workflow.add_edge("evaluate_chapter", "validate_evaluate")
+    # 评估报告
+    workflow.add_edge("validate_evaluate", "evaluate_report")
+    
     workflow.add_conditional_edges(
-        "validate_evaluate",
+        "evaluate_report",
         check_evaluation_node,
         {
             "success": "evaluate2wirte",
