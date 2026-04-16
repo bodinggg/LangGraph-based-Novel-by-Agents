@@ -135,49 +135,62 @@ API_TYPE=anthropic  # openai 或 anthropic
 
 ```plaintext
 LangGraph-based-Novel-by-Agents/
-├── assets/                # 存放README图片
-│   ├── gradio_interface.png  # 示例：Gradio前端界面截图
-│   └── workflow_diagram.png  # 示例：工作流流程图
-├── app_gradio.py         # 统一入口（Gradio UI + FastAPI）
-├── app_api.py           # 独立 FastAPI 服务入口
-├── app_service.py       # CLI 入口（WorkflowService）
-├── app.py               # 终端入口（Legacy）
-├── config.yaml          # 配置文件，配置Agent所用模型参数
-├── .env                 # API 配置（需创建）
-├── result/              # 存储结果
-│   └──*_storage/        # 运行过程中的存储
-├── logs/                # 工作流日志记录
-├── thinking_logs/       # Agent会话日志记录
-└──src/
-   ├── workflow.py          # 工作流定义，基于LangGraph构建节点与流转逻辑
-   ├── agent.py/
-   │   ├── EntityAgent            # 实体提取代理
-   │   ├── OutlineGeneratorAgent  # 大纲生成代理
-   │   ├── CharacterAgent         # 角色档案生成代理
-   │   ├── WriterAgent            # 章节撰写代理
-   │   └── ReflectAgent           # 内容评估代理
-   ├── node.py              # 工作流节点函数，实现各环节具体逻辑
-   ├── model.py             # 数据模型定义，基于Pydantic实现结构验证
-   ├── state.py             # 全局状态管理，存储创作过程中的所有数据
-   ├── storage.py           # 持久化到本地
-   ├── prompt.py            # 各Agent的提示词模板
-   ├── enhanced_prompt.py   # 评估反馈分支提示词模板
-   ├── feedback_processor.py  # 对于反馈不同的分支处理
-   ├── evaluation_reporter.py # 处理评估内容
-   ├── feedback_nodes.py      # 审查节点，用于接受用户输入
-   ├── config_loader.py     # 生成参数配置（长度，温度等）
-   ├── log_config.py        # 配置log文件
-   ├── thinking_logger.py   # 添加会话记录
-   ├── tool.py              # 工具函数（如JSON提取）
-   ├── model_manager.py     # 模型管理（OpenAI/Anthropic API）
-   ├── core/                 # 核心服务（Phase 1）
-   │   ├── workflow_service.py  # 工作流服务
-   │   ├── state_manager.py     # 状态管理
-   │   └── progress.py          # 进度事件
-   └── api/                  # FastAPI 服务（Phase 2）
-       ├── routes.py            # API 路由
-       ├── models.py             # 请求/响应模型
-       └── websocket_manager.py  # WebSocket 管理
+├── assets/                    # README 图片资源
+│   ├── graph_master.png       # 主工作流图
+│   ├── graph.png              # 工作流图
+│   └── *.png                  # Gradio 界面截图
+├── app_gradio.py              # 统一入口（Gradio UI + FastAPI）
+├── app_api.py                 # 独立 FastAPI 服务入口
+├── app_service.py             # CLI 入口（WorkflowService）
+├── app.py                     # 终端入口（Legacy）
+├── config.yaml                # Agent 配置文件
+├── pyproject.toml             # pytest 配置
+├── requirements.txt           # 依赖包
+├── ui_module/
+│   └── ui.py                  # Gradio UI 模块
+├── web/
+│   └── style.css              # Web 样式
+├── src/
+│   ├── workflow.py            # LangGraph 工作流定义
+│   ├── agent.py               # 5 个核心 Agent
+│   ├── node.py                # 工作流节点函数
+│   ├── model.py               # Pydantic 数据模型
+│   ├── state.py               # 全局状态管理
+│   ├── storage.py             # 本地持久化
+│   ├── prompt.py              # Agent 提示词模板
+│   ├── enhanced_prompts.py     # 评估反馈分支模板
+│   ├── feedback_processor.py  # 反馈分支处理
+│   ├── evaluation_reporter.py # 评估报告生成
+│   ├── feedback_nodes.py      # 审查节点（用户输入）
+│   ├── config_loader.py       # YAML 配置加载
+│   ├── log_config.py          # 日志配置
+│   ├── thinking_logger.py     # Agent 会话记录
+│   ├── tool.py                # 工具函数（JSON提取等）
+│   ├── model_manager.py       # 模型管理（OpenAI/Anthropic）
+│   ├── show.py                # 展示函数
+│   ├── core/                  # 核心服务
+│   │   ├── workflow_service.py
+│   │   ├── state_manager.py
+│   │   └── progress.py
+│   └── api/                   # FastAPI 服务
+│       ├── models.py
+│       ├── routes.py
+│       └── websocket_manager.py
+├── tests/                     # 测试目录
+│   ├── conftest.py            # pytest fixtures
+│   ├── unit/                  # 单元测试
+│   │   ├── test_tool.py
+│   │   ├── test_model.py
+│   │   ├── test_feedback_processor.py
+│   │   ├── test_evaluation_reporter.py
+│   │   ├── test_model_manager.py
+│   │   └── test_core.py
+│   └── integration/           # 集成测试
+│       └── test_storage.py
+├── result/                    # 生成结果存储（示例数据）
+│   └── 无主题冒险_storage/   # 示例小说存储目录
+├── thinking_logs/              # Agent 思考过程日志
+└── logs/                      # 工作流日志
 ```
 
 ## 核心Agent
