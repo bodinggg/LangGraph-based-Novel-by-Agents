@@ -76,7 +76,7 @@ pip install -r requirements.txt
 ```
 
 3. 配置 API（使用 API 模式需要配置）
-   - 复制 `.env.example` 为 `.env` 或直接编辑 `.env` 文件
+   - 复制 `.env.example` 为 `.env`
    - 填入 `API_KEY`、`BASE_URL`、`API_TYPE`（`openai` 或 `anthropic`）
 
 ## 使用方法
@@ -113,12 +113,12 @@ python app_service.py --model-type api --show-progress
 
 ```bash
 # 创建小说
-curl -X POST http://127.0.0.1:8001/api/v1/novels \
+curl -X POST http://127.0.0.1:7999/api/v1/novels \
   -H "Content-Type: application/json" \
   -d '{"user_intent": "科幻小说", "model_name": "你的模型", "min_chapters": 10}'
 
 # 查询状态
-curl http://127.0.0.1:8001/api/v1/novels/{workflow_id}
+curl http://127.0.0.1:7999/api/v1/novels/{workflow_id}
 ```
 
 ## 环境变量配置
@@ -144,6 +144,7 @@ LangGraph-based-Novel-by-Agents/
 ├── app_service.py             # CLI 入口（WorkflowService）
 ├── app.py                     # 终端入口（Legacy）
 ├── config.yaml                # Agent 配置文件
+├── .env.example               # 环境变量示例
 ├── pyproject.toml             # pytest 配置
 ├── requirements.txt           # 依赖包
 ├── ui_module/
@@ -188,9 +189,7 @@ LangGraph-based-Novel-by-Agents/
 │   └── integration/           # 集成测试
 │       └── test_storage.py
 ├── result/                    # 生成结果存储（示例数据）
-│   └── 无主题冒险_storage/   # 示例小说存储目录
 ├── thinking_logs/              # Agent 思考过程日志
-└── logs/                      # 工作流日志
 ```
 
 ## 核心Agent
