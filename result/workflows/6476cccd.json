@@ -1,0 +1,8 @@
+{
+  "characters_validated_error": "JSON解析错误: 在第1行, 第1列 - Expecting value: line 1 column 1 (char 0)\n错误位置附近内容:\n\n请检查括号是否匹配、是否使用双引号、逗号是否正确。",
+  "workflow_id": "6476cccd",
+  "status": "running",
+  "_saved_at": "2026-04-16T10:08:37.955701",
+  "current_node": "validate_characters",
+  "progress": 0.14
+}
