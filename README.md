@@ -1,4 +1,4 @@
-**有一些内容未更新完。还是，欢迎提Issues！**
+**有一些内容未更新完。还是，欢迎提Issues！--暂时复活版--**
 
 ## 项目简介
 
@@ -26,7 +26,9 @@
 
 ## 略大一些更新の日志
 
-2026-04-16：  重构架构，新增 FastAPI 服务层，支持多客户端访问；统一入口 `app_gradio.py` 同时提供 Gradio UI 和 REST API；API 支持 OpenAI 和 Anthropic 两种格式
+2026-04-16：  重构架构，新增 FastAPI 服务层，支持多客户端访问；统一入口 `app_gradio.py` 同时提供 Gradio UI 和 REST API；API 支持 OpenAI 和 Anthropic 两种格式；新增 pytest 测试框架，80+ 单元/集成测试覆盖
+
+2025-11-03：  添加质量评估结构化展示
 
 2025-11-03：  添加质量评估结构化展示
 
@@ -226,6 +228,30 @@ writer_config:
 - 完整的小说大纲（标题、类型、章节结构等）
 - 详细角色档案（背景、性格、成长弧线等）
 - 各章节完整内容（符合大纲设定，角色言行一致）
+
+## 测试
+
+```bash
+# 安装测试依赖
+pip install pytest pytest-mock pytest-cov
+
+# 运行所有测试
+pytest tests/ -v
+
+# 运行测试并查看覆盖率
+pytest tests/ -v --cov=src --cov-report=term-missing
+
+# 运行单元测试
+pytest tests/unit/ -v
+
+# 运行集成测试
+pytest tests/integration/ -v
+```
+
+测试目录结构：
+- `tests/conftest.py` - pytest fixtures 和共享配置
+- `tests/unit/` - 单元测试（工具函数、数据模型、反馈处理等）
+- `tests/integration/` - 集成测试（存储、工作流等）
 
 ## 流程图
 既然能看到最后，那这个流程图也会有耐心看的（我猜）
