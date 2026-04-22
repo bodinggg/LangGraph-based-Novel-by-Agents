@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Novel by Agents</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>📖 Novel by Agents</h1>
+            <p class="subtitle">AI 驱动的多 Agent 小说生成系统</p>
+        </header>
+
+        <main>
+            <!-- 输入区域 -->
+            <section class="input-section">
+                <h2>📝 创作意图</h2>
+                <textarea id="userIntent" placeholder="输入你想要创作的小说类型、主题、风格...例如：&#10;一部科幻小说，讲述人类在火星建立新文明的故事，包含政治斗争、冒险和友情"></textarea>
+
+                <div class="options">
+                    <div class="option">
+                        <label for="modelName">模型名称</label>
+                        <input type="text" id="modelName" placeholder="如：MiniMax/M2.7-Fuse">
+                    </div>
+                    <div class="option">
+                        <label for="minChapters">最少章节数</label>
+                        <input type="number" id="minChapters" value="10" min="1" max="1000">
+                    </div>
+                    <div class="option">
+                        <label for="volume">分卷数</label>
+                        <input type="number" id="volume" value="1" min="1" max="10">
+                    </div>
+                    <div class="option">
+                        <label>
+                            <input type="checkbox" id="masterOutline" checked>
+                            启用分卷大纲
+                        </label>
+                    </div>
+                </div>
+
+                <div class="actions">
+                    <button id="createBtn" class="btn primary">🚀 开始创作</button>
+                    <button id="cancelBtn" class="btn danger" disabled>⏹ 取消</button>
+                </div>
+            </section>
+
+            <!-- 进度区域 -->
+            <section class="progress-section" id="progressSection" style="display: none;">
+                <h2>⚙️ 生成进度</h2>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progressFill"></div>
+                </div>
+                <p class="progress-text" id="progressText">准备中...</p>
+                <p class="current-node" id="currentNode"></p>
+            </section>
+
+            <!-- 大纲区域 -->
+            <section class="outline-section" id="outlineSection" style="display: none;">
+                <h2>📋 小说大纲</h2>
+                <div class="content-box" id="outlineContent"></div>
+            </section>
+
+            <!-- 角色区域 -->
+            <section class="characters-section" id="charactersSection" style="display: none;">
+                <h2>👥 角色档案</h2>
+                <div class="content-box" id="charactersContent"></div>
+            </section>
+
+            <!-- 章节区域 -->
+            <section class="chapters-section" id="chaptersSection" style="display: none;">
+                <h2>📚 章节列表</h2>
+                <div class="chapter-list" id="chapterList"></div>
+            </section>
+
+            <!-- 单章内容区域 -->
+            <section class="chapter-content-section" id="chapterContentSection" style="display: none;">
+                <div class="chapter-header">
+                    <button id="backToListBtn" class="btn secondary">← 返回章节列表</button>
+                    <h2 id="chapterTitle">第一章</h2>
+                </div>
+                <div class="content-box chapter-content" id="chapterContent"></div>
+            </section>
+
+            <!-- 评估区域 -->
+            <section class="evaluation-section" id="evaluationSection" style="display: none;">
+                <h2>📊 内容评估</h2>
+                <div class="content-box" id="evaluationContent"></div>
+            </section>
+        </main>
+
+        <footer>
+            <p>基于 LangGraph 的多 Agent 协作系统</p>
+        </footer>
+    </div>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>
