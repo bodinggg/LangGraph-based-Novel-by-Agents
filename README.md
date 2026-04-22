@@ -26,6 +26,8 @@
 
 ## 略大一些更新の日志
 
+2026-04-22：  新增桌面应用，使用 pywebview 封装 Gradio UI
+
 2026-04-16：  重构架构，新增 FastAPI 服务层，支持多客户端访问；统一入口 `app_gradio.py` 同时提供 Gradio UI 和 REST API；API 支持 OpenAI 和 Anthropic 两种格式；新增 pytest 测试框架，80+ 单元/集成测试覆盖
 
 2025-11-03：  添加质量评估结构化展示
