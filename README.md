@@ -113,6 +113,15 @@ python app.py --model-type api --hitl True
 python app_service.py --model-type api --show-progress
 ```
 
+### 方式四：桌面应用
+安装桌面依赖并运行：
+```bash
+pip install pywebview
+python desktop/app.py
+```    
+
+
+
 ### API 使用示例
 
 ```bash
@@ -194,6 +203,10 @@ LangGraph-based-Novel-by-Agents/
 │       └── test_storage.py
 ├── result/                    # 生成结果存储（示例数据）
 ├── thinking_logs/              # Agent 思考过程日志
+├── desktop/                   # 桌面应用
+    │   ├── app.py                # pywebview 桌面入口
+    │   ├── static/               # 自定义静态资源
+    │   └── templates/            # HTML 模板
 ```
 
 ## 核心Agent
