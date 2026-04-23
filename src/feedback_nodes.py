@@ -97,14 +97,19 @@ def create_feedback_node(
     feedback_type_name: str
 ):
     """创建-反馈节点"""
-    
+
     def feedback_node(state: NovelState) -> Dict[str, Any]:
         """通用反馈节点 - 等待用户确认或修改内容"""
         logger.info(f"进入{feedback_type_name}反馈节点")
+
+        # 保留 novel_storage（关键状态）
+        base_result = {"novel_storage": state.novel_storage}
+
         try:
             if state.gradio_mode:
                 # Gradio模式：直接通过，不需要交互
                 return {
+                    **base_result,
                     feedback_action_attr: "success"
                 }
             else:
@@ -115,14 +120,14 @@ def create_feedback_node(
                     index=current_index + 1,
                     index_padded=f"{current_index + 1:04d}"
                 )
-                
+
                 step = input(f"您可以查看{file_path}文件，如果需要修改可以直接对源文件内容修改！\n请确认{feedback_type_name}无误，是否需要修改？\n(y(修改)/r(重新生成/n(不做改变)\n")
                 feedback_request = feedback_manager.request_feedback(
                     step=f"{feedback_type_name}_review",
                     content=None,
                     state=state
                 )
-                
+
                 if step.lower() == "y":
                     # 请求用户反馈
                     input("如果您修改完了，回车继续后续流程")
@@ -131,27 +136,28 @@ def create_feedback_node(
                     action = "regenerate"
                 else:
                     action = "continue"
-                
+
                 # 修改内容
                 feedback_submit = feedback_manager.submit_feedback(
                     feedback_id=feedback_request["feedback_id"],
                     action= action,
                     modified_content=None
                 )
-                
+
                 # print("="*100)
                 # print(f"{feedback_type_name}反馈完成")
                 # print("-"*100)
                 # print(f"feedback_submit: {feedback_submit}")
                 # print("="*100)
                 return {
+                    **base_result,
                     feedback_id_attr: feedback_submit["feedback_id"],
                     feedback_request_attr: feedback_submit
                 }
         except Exception as e:
             logger.error(f"处理{feedback_type_name}反馈时出错: {str(e)}")
-            return {feedback_error_attr: f"处理{feedback_type_name}反馈失败: {str(e)}"}
-        
+            return {**base_result, feedback_error_attr: f"处理{feedback_type_name}反馈失败: {str(e)}"}
+
     return feedback_node
 
 
@@ -164,35 +170,40 @@ def create_process_feedback_node(
     feedback_type_name: str
 ):
     """创建-处理反馈结果节点"""
-    
+
     def process_feedback_node(state: NovelState) -> Dict[str, Any]:
         """处理反馈结果"""
         logger.info(f"处理{feedback_type_name}反馈结果")
-        
+
+        # 保留 novel_storage（关键状态）
+        base_result = {"novel_storage": state.novel_storage}
+
         if state.gradio_mode:
             # Gradio模式：直接返回成功
             return {
+                **base_result,
                 feedback_action_attr: "success"
             }
-        
+
         feedback_id = getattr(state, feedback_id_attr, None)
         if not feedback_id:
-            return {feedback_error_attr: f"缺少{feedback_type_name}反馈ID"}
-        
+            return {**base_result, feedback_error_attr: f"缺少{feedback_type_name}反馈ID"}
+
         try:
             feedback = feedback_manager.pending_feedback.get(feedback_id)
             if not feedback:
-                return {feedback_error_attr: f"未找到对应的{feedback_type_name}反馈"}
-            
+                return {**base_result, feedback_error_attr: f"未找到对应的{feedback_type_name}反馈"}
+
             action = feedback.get("action", "continue")
-            
+
             # 暂未启用
             if action == "modify" and "modified_content" in feedback:
                 # 用户修改了内容
                 modified_content = feedback["modified_content"]
                 logger.info(f"用户修改了{feedback_type_name}，应用修改")
-                
+
                 return {
+                    **base_result,
                     content_attr: modified_content,
                     feedback_action_attr: "success"
                 }
@@ -200,6 +211,7 @@ def create_process_feedback_node(
                 # 用户要求重新生成
                 logger.info(f"用户要求重新生成{feedback_type_name}")
                 return {
+                    **base_result,
                     content_attr: None,
                     feedback_action_attr: "retry"
                 }
@@ -207,13 +219,14 @@ def create_process_feedback_node(
                 # 用户确认继续
                 logger.info(f"用户确认{feedback_type_name}，继续流程")
                 return {
+                    **base_result,
                     feedback_action_attr: "success"
                 }
-                
+
         except Exception as e:
             logger.error(f"处理{feedback_type_name}反馈时出错: {str(e)}")
-            return {feedback_error_attr: f"处理{feedback_type_name}反馈失败: {str(e)}"}
-    
+            return {**base_result, feedback_error_attr: f"处理{feedback_type_name}反馈失败: {str(e)}"}
+
     return process_feedback_node
 
 

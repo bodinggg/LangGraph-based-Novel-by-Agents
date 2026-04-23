@@ -4,6 +4,7 @@
 将LangGraph工作流与UI层分离，提供统一的工作流管理接口。
 """
 import uuid
+import json
 import threading
 import time
 from typing import Optional, Callable, Iterator, Any
@@ -12,6 +13,8 @@ from datetime import datetime
 from src.workflow import create_workflow
 from src.config_loader import ModelConfig, BaseConfig
 from src.core.state_manager import StateManager
+from src.storage import NovelStorage
+from src.model import NovelOutline, Character, ChapterOutline
 from src.core.progress import ProgressEvent, ProgressEmitter, WorkflowStatus, get_progress_emitter, emit_progress
 
 
@@ -84,6 +87,97 @@ class WorkflowService:
 
         return workflow_id
 
+    def resume_from_storage(
+        self,
+        novel_title: str,
+        model_config: ModelConfig,
+        agent_config: Optional[BaseConfig] = None,
+        min_chapters: int = 10,
+        volume: int = 1,
+        master_outline: bool = True
+    ) -> tuple[str, dict]:
+        """从存储目录恢复小说创作
+
+        Args:
+            novel_title: 小说标题
+            model_config: 模型配置
+            agent_config: Agent配置（可选）
+            min_chapters: 最少章节数
+            volume: 分卷数
+            master_outline: 是否启用分卷模式
+
+        Returns:
+            tuple: (workflow_id, initial_state)
+        """
+        workflow_id = str(uuid.uuid4())[:8]
+
+        # 合并配置
+        if agent_config is None:
+            agent_config = BaseConfig(
+                min_chapters=min_chapters,
+                volume=volume,
+                master_outline=master_outline
+            )
+
+        # 创建初始状态
+        initial_state = {
+            "user_intent": "",  # 从存储恢复，不需要用户意图
+            "min_chapters": min_chapters,
+            "gradio_mode": False,
+            "_created_at": datetime.now().isoformat(),
+            "novel_title": novel_title,
+        }
+
+        # 从存储加载数据
+        storage = NovelStorage(novel_title)
+        initial_state["novel_storage"] = storage
+
+        # 加载大纲
+        validated_outline = storage.load_outline()
+        if validated_outline:
+            initial_state["validated_outline"] = validated_outline
+            # raw_outline 需要是 JSON 字符串，用于验证节点重新验证
+            initial_state["raw_outline"] = json.dumps(validated_outline.model_dump(), ensure_ascii=False)
+            # 对于分卷模式，需要 validated_chapters
+            if validated_outline.chapters:
+                initial_state["validated_chapters"] = validated_outline.chapters
+
+        # 加载大纲元数据（卷进度）
+        outline_meta = storage.load_outline_metadata()
+        initial_state["current_volume_index"] = outline_meta.get("current_volume_index", 0)
+
+        # 加载角色
+        validated_characters = storage.load_characters()
+        if validated_characters:
+            initial_state["validated_characters"] = validated_characters
+
+        # 获取已完成章节数
+        completed_count = storage.get_completed_chapter_count()
+        initial_state["current_chapter_index"] = completed_count
+        initial_state["completed_chapters"] = list(range(1, completed_count + 1))
+
+        # 创建工作流记录
+        self.state_manager.create_workflow_record(workflow_id, novel_title, initial_state)
+
+        # 保存配置
+        config_data = model_config.model_dump()
+        config_data["agent_config"] = agent_config.model_dump() if agent_config else None
+        state = self.state_manager.load_state(workflow_id) or {}
+        state["config"] = config_data
+        state["novel_title"] = novel_title
+        state["novel_storage"] = storage
+        self.state_manager.save_state(workflow_id, state)
+
+        # 更新状态为运行中
+        self.state_manager.update_status(
+            workflow_id,
+            WorkflowStatus.RUNNING,
+            current_node="initializing",
+            progress=0.0
+        )
+
+        return workflow_id, initial_state
+
     def get_status(self, workflow_id: str) -> Optional[dict]:
         """获取工作流状态
 
@@ -135,13 +229,15 @@ class WorkflowService:
     def execute(
         self,
         workflow_id: str,
-        progress_callback: Optional[Callable[[ProgressEvent], None]] = None
+        progress_callback: Optional[Callable[[ProgressEvent], None]] = None,
+        resume: bool = False
     ) -> Iterator[tuple[str, dict]]:
         """执行工作流（同步迭代器）
 
         Args:
             workflow_id: 工作流ID
             progress_callback: 进度回调函数
+            resume: 是否从检查点恢复
 
         Yields:
             (node_name, state_dict): 每个节点的名称和状态
@@ -169,12 +265,68 @@ class WorkflowService:
         # 设置工作流元数据
         state["workflow_id"] = workflow_id
 
-        # 构建初始状态（只包含必要字段）
-        initial_state = {
-            "user_intent": state["user_intent"],
-            "min_chapters": state.get("min_chapters", 10),
-            "gradio_mode": state.get("gradio_mode", False),
-        }
+        # 检查是否有检查点可恢复
+        initial_state = None
+        if resume and self.state_manager.has_checkpoint(workflow_id):
+            checkpoint = self.state_manager.load_checkpoint(workflow_id)
+            if checkpoint:
+                from src.storage import NovelStorage
+                from src.model import NovelOutline, Character
+
+                # 从检查点恢复状态
+                storage = NovelStorage(checkpoint.get("novel_title", ""))
+
+                # 重建 validated_chapters
+                validated_chapters = []
+                for c in checkpoint.get("validated_chapters", []):
+                    try:
+                        validated_chapters.append(ChapterOutline(**c))
+                    except Exception:
+                        pass
+
+                # 重建 validated_characters
+                validated_characters = []
+                for c in checkpoint.get("validated_characters", []):
+                    try:
+                        validated_characters.append(Character(**c))
+                    except Exception:
+                        pass
+
+                initial_state = {
+                    "user_intent": checkpoint.get("user_intent", state["user_intent"]),
+                    "min_chapters": checkpoint.get("min_chapters", state.get("min_chapters", 10)),
+                    "gradio_mode": state.get("gradio_mode", False),
+                    "current_chapter_index": checkpoint.get("current_chapter_index", 0),
+                    "completed_chapters": checkpoint.get("completed_chapters", []),
+                    "raw_outline": checkpoint.get("raw_outline"),
+                    "raw_master_outline": checkpoint.get("raw_master_outline"),
+                    "validated_chapters": validated_chapters,
+                    "row_characters": checkpoint.get("row_characters"),
+                    "validated_characters": validated_characters,
+                    "novel_storage": storage,
+                    "current_node": checkpoint.get("current_node", ""),
+                }
+
+                # 加载已验证的大纲
+                outline_data = storage.load_outline()
+                if outline_data:
+                    initial_state["validated_outline"] = outline_data
+
+                emit_progress(
+                    workflow_id=workflow_id,
+                    node="resume",
+                    status=WorkflowStatus.RUNNING,
+                    message=f"从第{checkpoint.get('current_chapter_index', 0) + 1}章恢复创作...",
+                    progress=0.15
+                )
+
+        # 如果没有可恢复的检查点，使用初始状态
+        if initial_state is None:
+            initial_state = {
+                "user_intent": state["user_intent"],
+                "min_chapters": state.get("min_chapters", 10),
+                "gradio_mode": state.get("gradio_mode", False),
+            }
 
         cancelled = False
         try:
@@ -211,6 +363,11 @@ class WorkflowService:
                     node_state["status"] = WorkflowStatus.RUNNING.value
                     self.state_manager.save_state(workflow_id, node_state)
 
+                    # 保存检查点（用于断点续传）
+                    node_state["current_node"] = node_name
+                    node_state["novel_title"] = node_state.get("novel_storage", state.get("novel_title", "")).base_dir.name.replace("_storage", "") if hasattr(node_state.get("novel_storage"), "base_dir") else ""
+                    self.state_manager.save_checkpoint(workflow_id, node_state)
+
                     # 计算进度
                     progress = self._calculate_progress(node_name, node_state, agent_config)
                     self.state_manager.update_status(
@@ -242,10 +399,11 @@ class WorkflowService:
                     workflow_id=workflow_id,
                     node="",
                     status=WorkflowStatus.CANCELLED,
-                    message="工作流已被用户取消"
+                    message="工作流已被用户取消（已保存检查点，可恢复）"
                 )
             else:
-                # 工作流完成
+                # 工作流完成，清除检查点
+                self.state_manager.clear_checkpoint(workflow_id)
                 final_state = self.state_manager.load_state(workflow_id)
                 self.state_manager.update_status(
                     workflow_id,

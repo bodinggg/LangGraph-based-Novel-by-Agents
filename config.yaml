@@ -7,22 +7,22 @@ outline_config:
   master_outline: True  # 是否开启分卷
 
 character_config:
-  max_new_tokens: 3000
+  max_new_tokens: 10000
   temperature: 0.4
   top_p: 0.9
 
 writer_config:
-  max_new_tokens: 4096
+  max_new_tokens: 10000
   temperature: 0.4
   top_p: 0.9
 
 reflect_config:
-  max_new_tokens: 3000
+  max_new_tokens: 10000
   temperature: 0.4
   top_p: 0.9
 
 entity_config:
-  max_new_tokens: 3000
+  max_new_tokens: 10000
   temperature: 0.4
   top_p: 0.9
 

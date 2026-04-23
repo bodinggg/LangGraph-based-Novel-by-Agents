@@ -25,7 +25,7 @@ class NovelGeneratorUI:
         self.workflow = None  # 后端工作流实例
         self.current_state = None  # 当前生成状态
         self.processing = False  # 生成过程状态标记
-        self.all_chapters = []  # 存储所有章节内容 
+        self.all_chapters = []  # 存储所有章节内容
         self.validated_outline = None  # 已验证的小说大纲
         self.validated_characters = None  # 已验证的角色列表
         self.final_result = None  # 最终生成结果
@@ -37,6 +37,12 @@ class NovelGeneratorUI:
         # 交互式工作流控制变量
         self.workflow_iterator = None  # 工作流迭代器
         self.step_approved = None  # 步骤批准状态标志
+        # 断点续传相关
+        self.state_manager = None  # 状态管理器
+        self.workflow_id = None  # 当前工作流ID
+        self.checkpoint_available = False  # 是否有可恢复的断点
+        self.existing_novels = []  # 已有小说列表
+        self.selected_existing_novel = None  # 选中的已有小说
 
     def __update_status(self, message):
         """更新状态信息并记录日志"""
@@ -131,6 +137,333 @@ class NovelGeneratorUI:
         if 0 <= index < len(self.all_chapters):
             return self._format_chapter(self.all_chapters[index], index)
         return "章节内容不存在"
+
+    def _check_available_checkpoints(self):
+        """检查是否有可恢复的断点"""
+        from src.core.state_manager import StateManager
+        if self.state_manager is None:
+            self.state_manager = StateManager()
+        interrupted = self.state_manager.get_interrupted_workflows()
+        self.checkpoint_available = len(interrupted) > 0
+        return interrupted
+
+    def _format_interrupted_workflows(self, workflows):
+        """格式化中断工作流列表用于显示"""
+        if not workflows:
+            return "暂无中断的工作流"
+        text = "## 可恢复的工作流\n\n"
+        for w in workflows:
+            text += f"**小说**: {w.novel_title}\n"
+            text += f"**进度**: 第 {w.current_chapter_index + 1} 章\n"
+            text += f"**创建时间**: {w.created_at}\n\n"
+        return text
+
+    def _on_check_checkpoint(self):
+        """检查断点按钮回调"""
+        interrupted = self._check_available_checkpoints()
+        if interrupted:
+            self.checkpoint_available = True
+            display = self._format_interrupted_workflows(interrupted)
+            return display, gr.update(visible=True), gr.update(visible=True)
+        else:
+            self.checkpoint_available = False
+            return "✅ 暂无中断的工作流，可以开始新创作", gr.update(visible=False), gr.update(visible=False)
+
+    def _on_resume_workflow(self, user_intent, model_type, api_key, base_url, api_type, model_name, model_path, min_chapters, volume, master_outline):
+        """继续上次进度按钮回调"""
+        from src.core.state_manager import StateManager
+        from src.core.workflow_service import WorkflowService
+
+        self.state_manager = StateManager()
+        interrupted = self.state_manager.get_interrupted_workflows()
+
+        if not interrupted:
+            return "❌ 没有可恢复的工作流", gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(visible=False), gr.update(visible=False)
+
+        # 使用最新的中断工作流
+        workflow_id = interrupted[0].workflow_id
+        checkpoint = self.state_manager.load_checkpoint(workflow_id)
+
+        if not checkpoint:
+            return "❌ 加载断点失败", gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(visible=False), gr.update(visible=False)
+
+        # 恢复工作流
+        service = WorkflowService()
+        self.workflow_id = workflow_id
+        self.processing = True
+
+        status = self.__update_status(f"🔄 正在恢复工作流，从第 {checkpoint.get('current_chapter_index', 0) + 1} 章继续...")
+        yield status, gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(visible=False), gr.update(visible=False)
+
+        try:
+            # 创建模型配置
+            if model_type == "api":
+                model_config = ModelConfig(
+                    model_type="api",
+                    api_key=api_key,
+                    api_url=base_url,
+                    model_name=model_name,
+                    api_type=api_type
+                )
+            else:
+                model_config = ModelConfig(
+                    model_type="local",
+                    model_path=model_path
+                )
+
+            agent_config = BaseConfig(min_chapters=min_chapters, volume=volume, master_outline=master_outline)
+
+            # 创建工作流
+            self.workflow = create_workflow(model_config, agent_config)
+
+            # 从检查点恢复状态
+            initial_state = {
+                "user_intent": checkpoint.get("user_intent", user_intent),
+                "gradio_mode": True,
+                "min_chapters": min_chapters,
+            }
+
+            # 恢复已验证的大纲
+            validated_chapters = []
+            for c in checkpoint.get("validated_chapters", []):
+                try:
+                    from src.model import ChapterOutline
+                    validated_chapters.append(ChapterOutline(**c))
+                except Exception:
+                    pass
+            initial_state["validated_chapters"] = validated_chapters
+
+            # 恢复已验证的角色
+            validated_characters = []
+            for c in checkpoint.get("validated_characters", []):
+                try:
+                    from src.model import Character
+                    validated_characters.append(Character(**c))
+                except Exception:
+                    pass
+            initial_state["validated_characters"] = validated_characters
+
+            # 恢复章节索引
+            initial_state["current_chapter_index"] = checkpoint.get("current_chapter_index", 0)
+            initial_state["completed_chapters"] = checkpoint.get("completed_chapters", [])
+
+            # 恢复存储
+            from src.storage import NovelStorage
+            novel_title = checkpoint.get("novel_title", "")
+            if novel_title:
+                storage = NovelStorage(novel_title)
+                initial_state["novel_storage"] = storage
+
+            status = self.__update_status(f"✅ 已恢复状态，开始继续生成...")
+            yield status, gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(visible=False), gr.update(visible=False)
+
+            outline_box = None
+            characters_box = None
+            chapter_box = None
+            evaluation_box = None
+            chapter_selector = None
+
+            # 执行工作流
+            for step in self.workflow.stream(initial_state, {"recursion_limit": 1000000}):
+                for node, state_dict in step.items():
+                    self.current_state = state_dict
+
+                    status = self.__update_status(f"🔍 执行节点: {node}")
+
+                    if state_dict and state_dict.get('validated_outline'):
+                        self.validated_outline = state_dict['validated_outline']
+                        outline_box = self._format_outline(self.validated_outline, master_outline)
+
+                    if state_dict and state_dict.get('validated_characters'):
+                        self.validated_characters = state_dict['validated_characters']
+                        characters_box = self._format_characters(self.validated_characters)
+
+                    if state_dict and state_dict.get('validated_chapter_draft'):
+                        current_index = state_dict.get('current_chapter_index', 0)
+                        chapter_box = self._format_chapter(
+                            state_dict['validated_chapter_draft'],
+                            current_index
+                        )
+                        if self.last_chapter_index == current_index:
+                            self.all_chapters[-1] = state_dict['validated_chapter_draft']
+                        elif len(self.all_chapters) <= current_index:
+                            self.all_chapters.append(state_dict['validated_chapter_draft'])
+                            chapter_selector = self._update_chapter_selection(self.all_chapters)
+                        self.last_chapter_index = current_index
+
+                    if state_dict and state_dict.get('validated_evaluation'):
+                        evaluation_box = self._format_evaluation(state_dict['validated_evaluation'])
+
+                    # 保存检查点
+                    state_dict["workflow_id"] = self.workflow_id
+                    state_dict["current_node"] = node
+                    if "novel_storage" in state_dict and hasattr(state_dict["novel_storage"], "base_dir"):
+                        state_dict["novel_title"] = state_dict["novel_storage"].base_dir.name.replace("_storage", "")
+                    self.state_manager.save_checkpoint(self.workflow_id, state_dict)
+                    self.state_manager.save_state(self.workflow_id, state_dict)
+
+                    yield status, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector, gr.update(), gr.update(visible=False), gr.update(visible=False)
+
+            status = self.__update_status("🎉 小说生成完成！")
+            yield status, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector, "✅ 工作流已完成", gr.update(visible=False), gr.update(visible=False)
+
+        except Exception as e:
+            error_msg = f"❌ 恢复工作流失败：{str(e)}"
+            logger.error(error_msg)
+            yield error_msg, gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(visible=False), gr.update(visible=False)
+        finally:
+            self.processing = False
+            self.state_manager.clear_checkpoint(self.workflow_id)
+
+    def _on_clear_checkpoint(self):
+        """清除断点按钮回调"""
+        from src.core.state_manager import StateManager
+        self.state_manager = StateManager()
+        interrupted = self.state_manager.get_interrupted_workflows()
+
+        for w in interrupted:
+            self.state_manager.clear_checkpoint(w.workflow_id)
+            self.state_manager.delete_state(w.workflow_id)
+
+        self.checkpoint_available = False
+        return "✅ 已清除所有断点", gr.update(visible=False), gr.update(visible=False)
+
+    def _check_existing_novels(self):
+        """检查已有小说（从存储目录）"""
+        from src.core.state_manager import StateManager
+        if self.state_manager is None:
+            self.state_manager = StateManager()
+        novels = self.state_manager.list_existing_novels()
+        self.existing_novels = novels
+        return novels
+
+    def _format_existing_novels(self, novels):
+        """格式化已有小说列表用于显示"""
+        if not novels:
+            return "📭 暂未有已创作的小说", []
+        text = "## 📚 已存在的小说\n\n"
+        choices = []
+        for n in novels:
+            text += f"**{n['title']}**\n"
+            text += f"  章节数: {n['chapter_count']} | "
+            text += f"有大纲: {'✓' if n['has_outline'] else '✗'} | "
+            text += f"有角色: {'✓' if n['has_characters'] else '✗'}\n\n"
+            choices.append(n['title'])
+        return text, choices
+
+    def _on_check_existing_novels(self):
+        """检查已有小说按钮回调"""
+        novels = self._check_existing_novels()
+        if novels:
+            display, choices = self._format_existing_novels(novels)
+            return display, gr.update(choices=choices, value=choices[0] if choices else None, visible=True), gr.update(visible=True)
+        else:
+            return "📭 暂未有已创作的小说", gr.update(visible=False, choices=[]), gr.update(visible=False)
+
+    def _on_resume_from_storage(self, novel_title, model_type, api_key, base_url, api_type, model_name, model_path, min_chapters, volume, master_outline):
+        """从已有小说继续创作"""
+        from src.core.workflow_service import WorkflowService
+        from src.config_loader import ModelConfig, BaseConfig
+
+        if not novel_title:
+            return "❌ 请选择要继续的小说", gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(visible=False), gr.update(visible=False)
+
+        self.processing = True
+
+        status = self.__update_status(f"🔄 正在加载小说《{novel_title}》...")
+        yield status, gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(visible=False), gr.update(visible=False)
+
+        try:
+            # 创建模型配置
+            if model_type == "api":
+                model_config = ModelConfig(
+                    model_type="api",
+                    api_key=api_key,
+                    api_url=base_url,
+                    model_name=model_name,
+                    api_type=api_type
+                )
+            else:
+                model_config = ModelConfig(
+                    model_type="local",
+                    model_path=model_path
+                )
+
+            agent_config = BaseConfig(min_chapters=min_chapters, volume=volume, master_outline=master_outline)
+
+            # 创建工作流
+            service = WorkflowService()
+            self.workflow_id, initial_state = service.resume_from_storage(
+                novel_title=novel_title,
+                model_config=model_config,
+                agent_config=agent_config,
+                min_chapters=min_chapters,
+                volume=volume,
+                master_outline=master_outline
+            )
+
+            self.workflow = create_workflow(model_config, agent_config)
+
+            current_chapter = initial_state.get("current_chapter_index", 0) + 1
+            status = self.__update_status(f"✅ 已加载小说《{novel_title}》，从第 {current_chapter} 章继续创作...")
+            yield status, gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(visible=False), gr.update(visible=False)
+
+            outline_box = None
+            characters_box = None
+            chapter_box = None
+            evaluation_box = None
+            chapter_selector = None
+
+            # 执行工作流
+            for step in self.workflow.stream(initial_state, {"recursion_limit": 1000000}):
+                for node, state_dict in step.items():
+                    self.current_state = state_dict
+
+                    status = self.__update_status(f"🔍 执行节点: {node}")
+
+                    if state_dict and state_dict.get('validated_outline'):
+                        self.validated_outline = state_dict['validated_outline']
+                        outline_box = self._format_outline(self.validated_outline, master_outline)
+
+                    if state_dict and state_dict.get('validated_characters'):
+                        self.validated_characters = state_dict['validated_characters']
+                        characters_box = self._format_characters(self.validated_characters)
+
+                    if state_dict and state_dict.get('validated_chapter_draft'):
+                        current_index = state_dict.get('current_chapter_index', 0)
+                        chapter_box = self._format_chapter(
+                            state_dict['validated_chapter_draft'],
+                            current_index
+                        )
+                        if self.last_chapter_index == current_index:
+                            self.all_chapters[-1] = state_dict['validated_chapter_draft']
+                        elif len(self.all_chapters) <= current_index:
+                            self.all_chapters.append(state_dict['validated_chapter_draft'])
+                            chapter_selector = self._update_chapter_selection(self.all_chapters)
+                        self.last_chapter_index = current_index
+
+                    if state_dict and state_dict.get('validated_evaluation'):
+                        evaluation_box = self._format_evaluation(state_dict['validated_evaluation'])
+
+                    # 保存检查点
+                    state_dict["workflow_id"] = self.workflow_id
+                    state_dict["current_node"] = node
+                    if "novel_storage" in state_dict and hasattr(state_dict["novel_storage"], "base_dir"):
+                        state_dict["novel_title"] = state_dict["novel_storage"].base_dir.name.replace("_storage", "")
+                    service.state_manager.save_checkpoint(self.workflow_id, state_dict)
+                    service.state_manager.save_state(self.workflow_id, state_dict)
+
+                    yield status, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector, gr.update(), gr.update(visible=False), gr.update(visible=False)
+
+            status = self.__update_status("🎉 小说生成完成！")
+            yield status, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector, "✅ 工作流已完成", gr.update(visible=False), gr.update(visible=False)
+
+        except Exception as e:
+            error_msg = f"❌ 从存储恢复失败：{str(e)}"
+            logger.error(error_msg)
+            yield error_msg, gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(visible=False), gr.update(visible=False)
+        finally:
+            self.processing = False
 
     def _toggle_model_settings(self, model_type):
         """根据模型类型切换显示对应的设置项"""
@@ -1046,6 +1379,59 @@ class NovelGeneratorUI:
 
                 with gr.Column(scale=1):
                     gr.Markdown("## ⚙️ 生成设置", elem_classes="panel-title")
+
+                    # 断点续传区域
+                    with gr.Group(visible=True) as checkpoint_section:
+                        gr.Markdown("### 🔄 断点续传")
+                        checkpoint_status = gr.Button(
+                            "🔍 检查断点",
+                            elem_classes="checkpoint-btn",
+                            size="sm"
+                        )
+                        checkpoint_display = gr.Markdown(
+                            "点击按钮检查是否有可恢复的工作流",
+                            elem_classes="checkpoint-display"
+                        )
+                        resume_btn = gr.Button(
+                            "▶️ 继续上次进度",
+                            elem_classes="resume-btn",
+                            size="sm",
+                            visible=False
+                        )
+                        clear_checkpoint_btn = gr.Button(
+                            "🗑️ 清除断点",
+                            elem_classes="clear-btn",
+                            size="sm",
+                            visible=False
+                        )
+
+                    # 已有小说区域
+                    with gr.Group(visible=True) as existing_novel_section:
+                        gr.Markdown("### 📚 继续创作")
+                        check_existing_btn = gr.Button(
+                            "📂 查看已有小说",
+                            elem_classes="checkpoint-btn",
+                            size="sm"
+                        )
+                        existing_novels_display = gr.Markdown(
+                            "点击按钮查看已有小说",
+                            elem_classes="checkpoint-display"
+                        )
+                        existing_novel_dropdown = gr.Dropdown(
+                            label="选择小说",
+                            choices=[],
+                            interactive=True,
+                            visible=True
+                        )
+                        resume_from_storage_btn = gr.Button(
+                            "▶️ 继续创作",
+                            elem_classes="resume-btn",
+                            size="sm",
+                            visible=False
+                        )
+
+                    gr.Markdown("---")
+
                     user_intent = gr.Textbox(
                             label="小说创作意图", 
                             placeholder="例如：科幻题材，关于人工智能觉醒的故事",
@@ -1253,6 +1639,41 @@ class NovelGeneratorUI:
                         with gr.Tab("📊 评估反馈"):
                             evaluation_box = gr.Markdown("等待生成...")
             
+            # 绑定检查点按钮事件
+            checkpoint_status.click(
+                fn=self._on_check_checkpoint,
+                inputs=[],
+                outputs=[checkpoint_display, resume_btn, clear_checkpoint_btn]
+            )
+
+            # 绑定继续按钮事件
+            resume_btn.click(
+                fn=self._on_resume_workflow,
+                inputs=[user_intent, model_type, api_key, base_url, api_type, model_name, model_path, min_chapters, volume, master_outline],
+                outputs=[status_box, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector, checkpoint_display, resume_btn, clear_checkpoint_btn]
+            )
+
+            # 绑定清除按钮事件
+            clear_checkpoint_btn.click(
+                fn=self._on_clear_checkpoint,
+                inputs=[],
+                outputs=[checkpoint_display, resume_btn, clear_checkpoint_btn]
+            )
+
+            # 绑定查看已有小说按钮事件
+            check_existing_btn.click(
+                fn=self._on_check_existing_novels,
+                inputs=[],
+                outputs=[existing_novels_display, existing_novel_dropdown, resume_from_storage_btn]
+            )
+
+            # 绑定继续创作按钮事件
+            resume_from_storage_btn.click(
+                fn=self._on_resume_from_storage,
+                inputs=[existing_novel_dropdown, model_type, api_key, base_url, api_type, model_name, model_path, min_chapters, volume, master_outline],
+                outputs=[status_box, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector, existing_novels_display, existing_novel_dropdown, resume_from_storage_btn]
+            )
+
             # 绑定生成按钮事件
             generate_btn.click(
                 fn=self._generate_novel,

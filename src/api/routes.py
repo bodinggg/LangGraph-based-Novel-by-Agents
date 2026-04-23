@@ -7,7 +7,8 @@ from typing import Optional
 
 from src.api.models import (
     CreateNovelRequest, WorkflowStatusResponse,
-    ProgressEventResponse, NovelResultResponse, ErrorResponse
+    ProgressEventResponse, NovelResultResponse, ErrorResponse,
+    CharacterRelationshipResponse, CharacterGraphData, CharacterGraphNode, CharacterGraphLink
 )
 from src.api.websocket_manager import get_websocket_manager
 from src.core.workflow_service import get_workflow_service
@@ -100,6 +101,97 @@ async def list_novels():
     }
 
 
+@router.get("/novels/interrupted")
+async def list_interrupted_workflows():
+    """列出所有可恢复的工作流（存在检查点的中断工作流）"""
+    service = get_workflow_service()
+    workflows = service.state_manager.get_interrupted_workflows()
+
+    return {
+        "workflows": [
+            {
+                "workflow_id": w.workflow_id,
+                "user_intent": w.user_intent,
+                "status": w.status.value,
+                "progress": w.progress,
+                "current_node": w.current_node,
+                "created_at": w.created_at.isoformat(),
+                "updated_at": w.updated_at.isoformat()
+            }
+            for w in workflows
+        ]
+    }
+
+
+@router.get("/novels/existing")
+async def list_existing_novels():
+    """列出所有已存在的小说（基于存储目录，可用于断点恢复）"""
+    service = get_workflow_service()
+    novels = service.state_manager.list_existing_novels()
+
+    return {
+        "novels": novels
+    }
+
+
+@router.post("/novels/{novel_title}/resume")
+async def resume_novel_from_storage(novel_title: str):
+    """从存储目录恢复小说继续创作
+
+    基于 result/{title}_storage/ 目录中的已有数据进行断点恢复
+    """
+    from src.storage import NovelStorage
+
+    # 检查存储目录是否存在
+    storage = NovelStorage(novel_title)
+    if not storage.has_outline():
+        raise HTTPException(status_code=404, detail="小说不存在或无大纲")
+
+    # 获取存储信息
+    storage_info = storage.get_storage_info()
+
+    return {
+        "message": "小说存在，可恢复创作",
+        "novel_title": novel_title,
+        "chapter_count": storage_info.get("chapter_count", 0),
+        "has_outline": storage_info.get("has_outline", False),
+        "has_characters": storage_info.get("has_characters", False),
+        "next_chapter_index": storage_info.get("chapter_count", 0) + 1
+    }
+
+
+@router.post("/novels/{workflow_id}/resume")
+async def resume_novel(workflow_id: str):
+    """恢复中断的工作流继续执行"""
+    service = get_workflow_service()
+
+    # 检查工作流是否存在
+    status = service.get_status(workflow_id)
+    if status is None:
+        raise HTTPException(status_code=404, detail="工作流不存在")
+
+    # 检查是否有检查点
+    if not service.state_manager.has_checkpoint(workflow_id):
+        raise HTTPException(status_code=400, detail="没有可恢复的检查点")
+
+    # 后台执行工作流（从检查点恢复）
+    async def run_workflow():
+        try:
+            for node_name, state_dict in service.execute(workflow_id, resume=True):
+                # 进度通过 WebSocket 推送
+                pass
+        except Exception as e:
+            # 错误会在状态中反映
+            pass
+
+    asyncio.create_task(run_workflow())
+
+    return {
+        "message": "工作流已恢复",
+        "workflow_id": workflow_id
+    }
+
+
 @router.post("/novels/{workflow_id}/execute", response_model=WorkflowStatusResponse)
 async def execute_novel(workflow_id: str):
     """
@@ -167,6 +259,92 @@ async def websocket_progress(websocket: WebSocket, workflow_id: str):
 async def health_check():
     """健康检查"""
     return {"status": "ok", "service": "novel-generator-api"}
+
+
+@router.get("/novels/{workflow_id}/characters/relationships")
+async def get_character_relationships(workflow_id: str):
+    """获取角色关系列表"""
+    service = get_workflow_service()
+    state = service.state_manager.load_state(workflow_id)
+
+    if state is None:
+        raise HTTPException(status_code=404, detail="工作流不存在")
+
+    # 获取小说标题
+    novel_title = state.get("novel_title", "")
+    if not novel_title:
+        raise HTTPException(status_code=400, detail="工作流尚未开始，无法获取角色关系")
+
+    from src.storage import NovelStorage
+
+    storage = NovelStorage(novel_title)
+    characters = storage.load_characters()
+
+    if characters is None:
+        raise HTTPException(status_code=404, detail="角色档案不存在")
+
+    # 提取所有关系
+    relationships = []
+    for char in characters:
+        for rel in char.relationships:
+            relationships.append(CharacterRelationshipResponse(
+                source=rel.source,
+                target=rel.target,
+                relationship_type=rel.relationship_type,
+                description=rel.description,
+                events=rel.events
+            ))
+
+    return {"relationships": relationships}
+
+
+@router.get("/novels/{workflow_id}/characters/graph")
+async def get_character_graph(workflow_id: str):
+    """获取角色关系图数据（D3.js 格式）"""
+    service = get_workflow_service()
+    state = service.state_manager.load_state(workflow_id)
+
+    if state is None:
+        raise HTTPException(status_code=404, detail="工作流不存在")
+
+    # 获取小说标题
+    novel_title = state.get("novel_title", "")
+    if not novel_title:
+        raise HTTPException(status_code=400, detail="工作流尚未开始，无法获取角色关系图")
+
+    from src.storage import NovelStorage
+
+    storage = NovelStorage(novel_title)
+    characters = storage.load_characters()
+
+    if characters is None:
+        raise HTTPException(status_code=404, detail="角色档案不存在")
+
+    # 构建图数据
+    nodes = []
+    links = []
+    seen_nodes = set()
+
+    for char in characters:
+        # 添加节点
+        if char.name not in seen_nodes:
+            nodes.append(CharacterGraphNode(id=char.name, name=char.name))
+            seen_nodes.add(char.name)
+
+        # 添加关系边
+        for rel in char.relationships:
+            # 确保目标节点存在
+            if rel.target not in seen_nodes:
+                nodes.append(CharacterGraphNode(id=rel.target, name=rel.target))
+                seen_nodes.add(rel.target)
+
+            links.append(CharacterGraphLink(
+                source=rel.source,
+                target=rel.target,
+                type=rel.relationship_type
+            ))
+
+    return CharacterGraphData(nodes=nodes, links=links)
 
 
 @router.get("/")

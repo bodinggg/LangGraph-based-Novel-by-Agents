@@ -2,9 +2,12 @@
 Shared pytest fixtures for testing
 """
 import pytest
+import shutil
+import tempfile
 from unittest.mock import MagicMock, patch
 from src.model import NovelOutline, ChapterOutline, Character, QualityEvaluation, FeedbackItem
 from src.storage import NovelStorage
+from src.core.state_manager import StateManager
 from src.thinking_logger import create_disabled_logger
 
 
@@ -97,3 +100,12 @@ def mock_model_manager():
 def disabled_thinking_logger():
     """Disabled thinking logger for testing"""
     return create_disabled_logger()
+
+
+@pytest.fixture
+def temp_state_manager():
+    """Create a temporary state manager for testing"""
+    temp_dir = tempfile.mkdtemp()
+    manager = StateManager(storage_dir=temp_dir)
+    yield manager
+    shutil.rmtree(temp_dir, ignore_errors=True)

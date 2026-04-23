@@ -27,7 +27,39 @@ def get_args():
     parser.add_argument("--model_type", default='api', type=str, help="local or api")
     parser.add_argument("--hitl", default=False, type=bool, help="启用人机交互模式")
     parser.add_argument("--show-progress", action='store_true', help='显示详细进度')
+    parser.add_argument("--force", action="store_true", help="强制开始新工作流，不询问断点续传")
     return parser.parse_args()
+
+
+def check_and_offer_resume(service):
+    """检查是否存在可恢复的断点，如果存在则询问用户"""
+    # 获取所有中断的工作流
+    interrupted = service.state_manager.get_interrupted_workflows()
+    if not interrupted:
+        return None
+
+    # 显示中断的工作流
+    print("\n" + "="*50)
+    print("发现未完成的工作流：")
+    for w in interrupted:
+        print(f"  - 意图: {w.user_intent[:30]}...")
+        print(f"    进度: {w.progress:.1%} | 状态: {w.status.value}")
+        print(f"    当前节点: {w.current_node}")
+        print()
+    print("="*50)
+
+    while True:
+        choice = input("\n请选择操作：\n1. 恢复最近的工作流\n2. 放弃并重新开始\n请输入选项 (1/2): ").strip()
+        if choice == "1":
+            return interrupted[0].workflow_id
+        elif choice == "2":
+            # 清除所有检查点
+            for w in interrupted:
+                service.state_manager.clear_checkpoint(w.workflow_id)
+                service.state_manager.delete_state(w.workflow_id)
+            return None
+        else:
+            print("无效选项，请重新输入")
 
 
 def progress_callback(event):
@@ -62,26 +94,39 @@ def main():
             model_path=model_path
         )
 
-    user_intent = input("请输入你的小说创作意图：")
-    logger.info(f"用户创作意图: {user_intent}")
+    # 检查断点续传（除非 --force 指定）
+    resume_workflow_id = None
+    if not args.force:
+        resume_workflow_id = check_and_offer_resume(service)
 
-    print(f"\n📖 创作意图: {user_intent}")
-    print(f"🔧 模型类型: {args.model_type}")
+    if resume_workflow_id:
+        # 恢复已有工作流
+        workflow_id = resume_workflow_id
+        user_intent = service.get_status(workflow_id).get("user_intent", "")
+        print(f"\n🚀 恢复工作流 (ID: {workflow_id})")
+    else:
+        # 创建新的工作流
+        user_intent = input("请输入你的小说创作意图：")
+        logger.info(f"用户创作意图: {user_intent}")
 
-    # 使用 WorkflowService 创建工作流
-    agent_config = BaseConfig(
-        min_chapters=OutlineConfig.min_chapters,
-        volume=OutlineConfig.volume,
-        master_outline=OutlineConfig.master_outline
-    )
+        print(f"\n📖 创作意图: {user_intent}")
+        print(f"🔧 模型类型: {args.model_type}")
 
-    workflow_id = service.create_novel(
-        user_intent=user_intent,
-        model_config=model_config,
-        agent_config=agent_config
-    )
+        # 使用 WorkflowService 创建工作流
+        agent_config = BaseConfig(
+            min_chapters=OutlineConfig.min_chapters,
+            volume=OutlineConfig.volume,
+            master_outline=OutlineConfig.master_outline
+        )
 
-    print(f"\n🚀 工作流已创建 (ID: {workflow_id})")
+        workflow_id = service.create_novel(
+            user_intent=user_intent,
+            model_config=model_config,
+            agent_config=agent_config
+        )
+
+        print(f"\n🚀 工作流已创建 (ID: {workflow_id})")
+
     print("=" * 50)
 
     # 订阅进度事件（如果启用）
@@ -90,9 +135,10 @@ def main():
         emitter.subscribe(progress_callback)
 
     try:
-        # 执行工作流
+        # 执行工作流（传入 resume=True 如果是恢复）
         final_state = None
-        for node_name, state_dict in service.execute(workflow_id):
+        should_resume = resume_workflow_id is not None
+        for node_name, state_dict in service.execute(workflow_id, resume=should_resume):
             if args.show_progress:
                 print(f"\n[{node_name}]")
 

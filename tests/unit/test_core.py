@@ -238,8 +238,12 @@ class TestStateManager:
             updated_at=datetime.now(),
             status=WorkflowStatus.RUNNING,
             current_node="write_chapter",
-            progress=0.5
+            progress=0.5,
+            novel_title="星际穿越",
+            current_chapter_index=5
         )
         assert info.workflow_id == "test"
         assert info.status == WorkflowStatus.RUNNING
         assert info.progress == 0.5
+        assert info.novel_title == "星际穿越"
+        assert info.current_chapter_index == 5

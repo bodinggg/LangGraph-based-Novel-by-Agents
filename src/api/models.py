@@ -62,3 +62,31 @@ class ErrorResponse(BaseModel):
     """错误响应"""
     error: str
     detail: Optional[str] = None
+
+
+class CharacterRelationshipResponse(BaseModel):
+    """角色关系响应"""
+    source: str
+    target: str
+    relationship_type: str
+    description: str
+    events: List[str] = []
+
+
+class CharacterGraphNode(BaseModel):
+    """角色关系图节点"""
+    id: str
+    name: str
+
+
+class CharacterGraphLink(BaseModel):
+    """角色关系图边"""
+    source: str
+    target: str
+    type: str
+
+
+class CharacterGraphData(BaseModel):
+    """角色关系图数据（D3.js 格式）"""
+    nodes: List[CharacterGraphNode]
+    links: List[CharacterGraphLink]

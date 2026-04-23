@@ -28,18 +28,47 @@ logger = loggers['node']
 
 # -------------------- 大纲(分卷) -------------------- [生成 -> 验证 -> 状态判断]
 def generate_master_outline_node(state: NovelState, outline_agent:OutlineGeneratorAgent) -> NovelState:
+    # 如果已有验证通过的大纲（分卷模式），跳过生成
+    if state.validated_outline is not None:
+        logger.info("已有验证通过的分卷大纲，跳过生成步骤")
+        return {
+            "novel_storage": state.novel_storage,
+            "raw_master_outline": state.raw_master_outline,
+            "validated_outline": state.validated_outline,
+            "attempt": 0,
+            "outline_validated_error": None
+        }
+
     logger.info(f"开始分卷生成小说大纲(第{state.attempt + 1}次尝试)")
     raw_master = outline_agent.generate_master_outline(state.user_intent)
     extracted_json = extract_json(raw_master)
     if extracted_json:
         raw_master = extracted_json
         logger.info(f"【分卷】成功提取大纲JSON内容")
+    else:
+        # JSON提取失败（可能截断），返回错误以触发重试
+        logger.info("【分卷】大纲JSON提取失败，内容可能被截断")
+        return {
+            "raw_master_outline": raw_master,
+            "outline_validated_error": "大纲JSON提取失败，内容可能被截断，请重试",
+            "attempt": state.attempt + 1
+        }
     return {
         "raw_master_outline": raw_master,
         "attempt":state.attempt+1
     }
     
 def validate_master_outline_node(state: NovelState) -> NovelState:
+    # 如果已有验证通过的大纲，跳过验证（从存储恢复时）
+    if state.validated_outline is not None and state.outline_validated_error is None:
+        logger.info("已有验证通过的分卷大纲，跳过验证步骤")
+        return {
+            "novel_storage": state.novel_storage,
+            "validated_outline": state.validated_outline,
+            "outline_validated_error": None,
+            "attempt": 0,
+        }
+
     try:
         master_data = json.loads(state.raw_master_outline)
         master_data["chapters"]=[]
@@ -94,8 +123,25 @@ def check_master_outline_node(state: NovelState) -> Literal["success", "retry", 
         logger.info(f"【分卷】failure:大纲检查失败, 转移至 failure 节点")
         return "failure"
         
-# -------------------- 大纲(分章) -------------------- [生成 -> 验证 -> 状态判断]   
+# -------------------- 大纲(分章) -------------------- [生成 -> 验证 -> 状态判断]
 def generate_volume_outline_node(state:NovelState, outline_agent:OutlineGeneratorAgent) -> NovelState:
+    # 如果已有完整的大纲章节列表，跳过卷章节生成（从存储恢复时）
+    # 计算 master_outline 中所有卷的章节总数
+    if state.validated_outline is not None and state.validated_outline.master_outline is not None:
+        total_expected = 0
+        for vol in state.validated_outline.master_outline:
+            start_idx, end_idx = map(int, vol.chapters_range.split('-'))
+            total_expected += (end_idx - start_idx + 1)
+        if len(state.validated_outline.chapters) >= total_expected:
+            logger.info(f"所有卷章节已生成（共{len(state.validated_outline.chapters)}章），跳过卷章节生成")
+            return {
+                "novel_storage": state.novel_storage,
+                "current_volume_index": len(state.validated_outline.master_outline),
+                "validated_chapters": [],
+                "raw_volume_chapters": None,
+                "attempt": 0
+            }
+
     logger.info(f"开始分章生成卷{state.current_volume_index+1}小说大纲(第{state.attempt + 1}次尝试)")
     volume_index = state.current_volume_index
     raw_chapters = outline_agent.generate_volume_chapters(state, volume_index)
@@ -103,13 +149,31 @@ def generate_volume_outline_node(state:NovelState, outline_agent:OutlineGenerato
     if extracted_json:
         raw_chapters = extracted_json
         logger.info(f"【分章】成功提取大纲JSON内容")
+    else:
+        # JSON提取失败（可能截断），返回错误以触发重试
+        logger.info("【分章】大纲JSON提取失败，内容可能被截断")
+        return {
+            "raw_volume_chapters": raw_chapters,
+            "outline_validated_error": "分章大纲JSON提取失败，内容可能被截断，请重试",
+            "attempt": state.attempt + 1
+        }
     return {
         "raw_volume_chapters": raw_chapters,
         "attempt":state.attempt+1
     }
 
 def validate_volume_outline_node(state:NovelState) -> NovelState:
-    logger.info(f"开始分章验证卷{state.current_volume_index+1}小说大纲(第{state.attempt + 1}次尝试)")
+    # 如果 raw_volume_chapters 为 None，说明已跳过卷章节生成（从存储恢复时）
+    if state.raw_volume_chapters is None:
+        logger.info("卷章节已全部生成，跳过验证步骤")
+        return {
+            "novel_storage": state.novel_storage,
+            "validated_chapters": [],
+            "outline_validated_error": None,
+            "attempt": 0
+        }
+
+    logger.info(f"开始分章验证卷{state.current_volume_index+1}小说大纲(第{state.attempt}次尝试)")
     try:
         volume_index = state.current_volume_index
         volume_data = json.loads(state.raw_volume_chapters)
@@ -163,8 +227,10 @@ def check_volume_outline_node(state: NovelState) -> Literal["success", "retry", 
 
 # 中继节点
 def volume2character(state:NovelState) -> NovelState:
-
-    return {"attempt":0}
+    return {
+        "novel_storage": state.novel_storage,
+        "attempt": 0
+    }
 
 
 # 判断大纲是否创建结束
@@ -177,16 +243,19 @@ def accept_outline_node(state: NovelState) -> NovelState:
     updated_chapters = validated_outline.chapters + chapters
     validated_outline = validated_outline.model_copy(update={"chapters": updated_chapters})
     current_volume_index = state.current_volume_index
-    # 重置卷相关状态, 准备处理下一卷
+    next_volume_index = current_volume_index + 1
+
+    # 最后一卷时保存大纲和元数据（不改变 novel_storage 的类型）
     if current_volume_index == len(validated_outline.master_outline) - 1:
-        state.novel_storage = NovelStorage(state.validated_outline.title)
-        state.novel_storage.save_outline(state.validated_outline)
-        
-    
+        state.novel_storage = NovelStorage(validated_outline.title)
+        state.novel_storage.save_outline(validated_outline)
+        state.novel_storage.save_outline_metadata(next_volume_index, len(updated_chapters))
+
+    # 重置卷相关状态, 准备处理下一卷
     return {
         "novel_storage": state.novel_storage,
         "validated_outline": validated_outline,
-        "current_volume_index": current_volume_index + 1,
+        "current_volume_index": next_volume_index,
         "raw_volume_chapters": None
     }
 
@@ -209,8 +278,18 @@ def check_outline_completion_node(state: NovelState) -> Literal["continue", "com
 # -------------------- 大纲 -------------------- [生成 -> 验证 -> 状态判断]
 def generate_outline_node(state: NovelState, outline_agent: OutlineGeneratorAgent) -> NovelState:
     """生成小说大纲的节点"""
+    # 如果已有验证通过的大纲，跳过生成（从存储恢复时）
+    if state.validated_outline is not None:
+        logger.info("已有验证通过的大纲，跳过生成步骤")
+        return {
+            "raw_outline": state.raw_outline or "",
+            "validated_outline": state.validated_outline,
+            "attempt": 0,
+            "outline_validated_error": None
+        }
+
     logger.info(f"开始生成小说大纲(第{state.attempt + 1}次尝试)")
-    
+
     raw_outline = outline_agent.generate_outline(state)
 
     # 尝试提取JSON部分
@@ -218,7 +297,15 @@ def generate_outline_node(state: NovelState, outline_agent: OutlineGeneratorAgen
     if extracted_json:
         raw_outline = extracted_json
         logger.info(f"成功提取大纲JSON内容")
-    
+    else:
+        # JSON提取失败（可能截断），返回错误以触发重试
+        logger.info("大纲JSON提取失败，内容可能被截断")
+        return {
+            "raw_outline": raw_outline,
+            "outline_validated_error": "大纲JSON提取失败，内容可能被截断，请重试",
+            "attempt": state.attempt + 1
+        }
+
     return {
         "raw_outline": raw_outline,
         "attempt": state.attempt + 1
@@ -227,6 +314,15 @@ def generate_outline_node(state: NovelState, outline_agent: OutlineGeneratorAgen
 
 def validate_outline_node(state: NovelState) -> NovelState:
     """验证小说大纲的节点"""
+    # 如果已有验证通过的大纲，跳过验证（从存储恢复时）
+    if state.validated_outline is not None and state.outline_validated_error is None:
+        logger.info("已有验证通过的大纲，跳过验证步骤")
+        return {
+            "validated_outline": state.validated_outline,
+            "attempt": 0,
+            "outline_validated_error": None
+        }
+
     logger.info(f"开始生成小说大纲(第{state.attempt + 1}次尝试)")
     try:
         # 解析JSON
@@ -284,19 +380,35 @@ def check_outline_node(state: NovelState) -> Literal["success", "retry", "failur
 # -------------------- 角色档案 -------------------- [生成 -> 验证 -> 状态判断]
 def generate_characters_node(state: NovelState, character_agent: CharacterAgent) -> NovelState:
     """生成详细角色档案的节点"""
+    # 如果已有验证通过的角色，跳过生成（从存储恢复时）
+    if state.validated_characters is not None and len(state.validated_characters) > 0:
+        logger.info("已有验证通过的角色，跳过生成步骤")
+        return {
+            "novel_storage": state.novel_storage,
+            "validated_characters": state.validated_characters,
+            "attempt": 0,
+            "characters_validated_error": None
+        }
+
     logger.info(f"正在生成角色档案(第{state.attempt + 1}次尝试)...")
-
-    
-
     # 调用角色代理生成角色档案
     raw_characters = character_agent.generate_characters(state)
 
     # 尝试提取JSON部分
-    extracted_json = extract_json( raw_characters)
+    extracted_json = extract_json(raw_characters)
     if extracted_json:
         raw_characters = extracted_json
         logger.info(f"成功提取角色列表JSON内容")
-    
+    else:
+        # JSON提取失败（可能截断），返回错误以触发重试
+        logger.info("角色档案JSON提取失败，内容可能被截断")
+        return {
+            "validated_outline": None,
+            "row_characters": raw_characters,
+            "characters_validated_error": "角色档案JSON提取失败，内容可能被截断，请重试",
+            "attempt": state.attempt + 1
+        }
+
     # 到生成角色档案了，大纲一定创建完成了，这时候去初始化存储器
     return {
         "validated_outline":None,
@@ -306,6 +418,16 @@ def generate_characters_node(state: NovelState, character_agent: CharacterAgent)
 
 def validate_characters_node(state: NovelState) -> NovelState:
     """验证角色档案格式"""
+    # 如果已有验证通过的角色，跳过验证（从存储恢复时）
+    if state.validated_characters is not None and len(state.validated_characters) > 0 and state.characters_validated_error is None:
+        logger.info("已有验证通过的角色，跳过验证步骤")
+        return {
+            "novel_storage": state.novel_storage,
+            "validated_characters": state.validated_characters,
+            "attempt": 0,
+            "characters_validated_error": None
+        }
+
     logger.info("正在验证角色档案格式...")
     try:
         # 解析JSON
@@ -376,6 +498,7 @@ def write_chapter_node(state: NovelState, writer_agent: WriterAgent) -> NovelSta
     # 获取当前状态中的必要信息
     revision_feedback = state.validated_evaluation
     current_index = state.current_chapter_index
+    
     outline = state.novel_storage.load_outline()
       
     # 获取当前章节大纲
@@ -387,16 +510,25 @@ def write_chapter_node(state: NovelState, writer_agent: WriterAgent) -> NovelSta
 
     # 调用写作代理生成章节内容
     raw_chapter = writer_agent.write_chapter(state)
-        
+
     # 提取并解析JSON
     extracted_json = extract_json(raw_chapter)
     if extracted_json:
         raw_chapter = extracted_json
-        logger.info("【单章撰写】成功提取大纲JSON内容")
+        logger.info("【单章撰写】成功提取章节JSON内容")
+    else:
+        # JSON提取失败（可能截断），返回错误以触发重试
+        logger.info("【单章撰写】章节JSON提取失败，内容可能被截断")
+        return {
+            "raw_current_chapter": raw_chapter,
+            "current_chapter_validated_error": "章节JSON提取失败，内容可能被截断，请重试",
+            "attempt": state.attempt + 1,
+            "evaluate_attempt": state.evaluate_attempt + 1
+        }
     return {
         "raw_current_chapter": raw_chapter,
         "attempt": state.attempt + 1,
-        "evaluate_attempt": state.evaluate_attempt + 1 
+        "evaluate_attempt": state.evaluate_attempt + 1
     }   
     
 def validate_chapter_node(state:NovelState) -> NovelState:
@@ -464,11 +596,19 @@ def evaluate_chapter_node(state: NovelState, reflect_agent: ReflectAgent) -> Nov
     raw_evaluation = reflect_agent.evaluate_chapter(state)
     # 提取并解析JSON
     extracted_json = extract_json(raw_evaluation)
-        
+
     if extracted_json:
         raw_evaluation = extracted_json
-        logger.info(f"成功评估！")
-    
+        logger.info(f"成功提取评估JSON内容！")
+    else:
+        # JSON提取失败（可能截断），返回错误以触发重试
+        logger.info("评估JSON提取失败，内容可能被截断")
+        return {
+            "attmept": state.attempt + 1,
+            "raw_chapter_evaluation": raw_evaluation,
+            "evaluation_validated_error": "评估JSON提取失败，内容可能被截断，请重试"
+        }
+
     return {
         "attmept": state.attempt+1,
 
@@ -521,11 +661,13 @@ def evaluate_report_node(state: NovelState, reflect_agent: ReflectAgent) -> Nove
         reflect_agent.generate_evaluation_report(state)
         logger.info(f"【内容评估】生成评估报告成功")
         return{
+            "novel_storage": state.novel_storage,
             "report_error":None
         }
     except Exception as e:
         logger.info(f"【内容评估】生成评估报告失败: {str(e)}")
         return {
+            "novel_storage": state.novel_storage,
             "report_error": f"生成评估报告失败: {str(e)}"
         }
 
@@ -544,6 +686,7 @@ def check_evaluation_node(state: NovelState) -> Literal["success", "retry", "fai
 def evaluation_to_chapter_node(state:NovelState) -> NovelState:
     logger.info(f"评估内容没问题, 重写本章节:{state.validated_evaluation}")
     return {
+        "novel_storage": state.novel_storage,
         "attempt":0
     }
 
@@ -570,10 +713,19 @@ def generate_entities_node(state: NovelState, entity_agent: EntityAgent) -> Nove
     extracted_json = extract_json(raw_entities)
     if extracted_json:
         raw_entities = extracted_json
-        logger.info("【实体识别】成功提取大纲JSON内容")
+        logger.info("【实体识别】成功提取实体JSON内容")
+    else:
+        # JSON提取失败（可能截断），返回错误以触发重试
+        logger.info("【实体识别】实体JSON提取失败，内容可能被截断")
+        return {
+            "novel_storage": state.novel_storage,
+            "attempt": state.attempt + 1,
+            "raw_entities": raw_entities,
+            "entities_validated_error": "实体JSON提取失败，内容可能被截断，请重试"
+        }
 
-    
     return {
+        "novel_storage": state.novel_storage,
         "attempt": state.attempt + 1,
         "raw_entities": raw_entities
     }
@@ -584,11 +736,12 @@ def validate_entities_node(state: NovelState) -> NovelState:
     try:
         entities_data = json.loads(state.raw_entities)
         entities = EntityContent(**entities_data)
-        
+
         logger.info(f"第{state.current_chapter_index + 1}章实体加载完成")
         # 存储实体文件到对应章节
         state.novel_storage.save_entity(state.current_chapter_index,entities)
         return {
+            "novel_storage": state.novel_storage,
             "attempt": 0,
             "entities_validated_error": None
         }
@@ -596,17 +749,19 @@ def validate_entities_node(state: NovelState) -> NovelState:
         error_lines = state.raw_entities.split('\n')
         error_line = min(e.lineno - 1, len(error_lines) - 1) if e.lineno else 0
         context = "\n".join(error_lines[max(0, error_line - 2):min(len(error_lines), error_line + 3)])
-        
+
         error_msg = (f"JSON解析错误: 在第{e.lineno}行, 第{e.colno}列 - {str(e)}\n"
                     f"错误位置附近内容:\n{context}\n"
                     "请检查括号是否匹配、是否使用双引号、逗号是否正确。")
         logger.info(f"【实体识别】生成JSON格式错误")
         return {
+            "novel_storage": state.novel_storage,
             "entities_validated_error": error_msg
         }
     except Exception as e:
         logger.info(f"【实体识别】实体生成失败: {str(e)}")
         return {
+            "novel_storage": state.novel_storage,
             "entities_validated_error": f"实体生成失败: {str(e)}"
         }
 
@@ -627,12 +782,13 @@ def accept_chapter_node(state: NovelState) -> NovelState:
     """接受章节, 将其添加到章节列表并准备处理下一章节"""
     current_draft = state.validated_chapter_draft
     current_index = state.current_chapter_index
-    
+
 
     state.novel_storage.save_chapter(chapter_index=current_index+1, chapter= current_draft)
     logger.info(f"章节{current_index+1}已接受, 已添加到本地")
     # 重置章节相关状态, 准备处理下一章节
     return {
+        "novel_storage": state.novel_storage,
         "current_chapter_index": current_index + 1,
         "evaluate_attempt":0,
         "validated_chapter_draft": None,

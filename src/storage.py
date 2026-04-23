@@ -56,8 +56,6 @@ class NovelStorage:
             with open(chapter_path_json, "r", encoding="utf-8") as f:
                 data = json.load(f)
             return ChapterContent(**data)
-
-        
         except FileNotFoundError:
             return None
 
@@ -74,11 +72,71 @@ class NovelStorage:
         with open(self.entity_dir / f"{chapter_index}_entity.json", "w", encoding="utf-8") as f:
             json.dump(entity_data.model_dump(), f, ensure_ascii=False, indent=2)
 
-    def load_entity(self, chapter_index: int ) -> Optional[EntityContent]:
+    def load_entity(self, chapter_index: int) -> Optional[EntityContent]:
         try:
             with open(self.entity_dir / f"{chapter_index}_entity.json", "r", encoding="utf-8") as f:
                 data = json.load(f)
             return EntityContent(**data)
-        
         except FileNotFoundError:
             return None
+
+    # 断点恢复相关方法
+    def get_completed_chapter_count(self) -> int:
+        """获取已完成的章节数量（用于断点恢复）"""
+        chapters = list(self.chapter_dir.glob("*.txt"))
+        return len(chapters)
+
+    def get_novel_title(self) -> str:
+        """从存储目录名称提取小说标题
+
+        Returns:
+            小说标题（不含 _storage 后缀）
+        """
+        return self.base_dir.name.replace("_storage", "")
+
+    def has_outline(self) -> bool:
+        """检查是否存在已保存的大纲"""
+        return (self.base_dir / "outline.json").exists()
+
+    def has_characters(self) -> bool:
+        """检查是否存在已保存的角色档案"""
+        return (self.base_dir / "characters.json").exists()
+
+    def save_outline_metadata(self, current_volume_index: int, validated_chapters_count: int = 0):
+        """保存大纲元数据（用于断点恢复）
+
+        Args:
+            current_volume_index: 当前已完成的卷索引
+            validated_chapters_count: 已验证的章节数量
+        """
+        meta = {
+            "current_volume_index": current_volume_index,
+            "validated_chapters_count": validated_chapters_count,
+        }
+        with open(self.base_dir / "outline_meta.json", "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False, indent=2)
+
+    def load_outline_metadata(self) -> dict:
+        """加载大纲元数据
+
+        Returns:
+            包含 current_volume_index 和 validated_chapters_count 的字典
+        """
+        try:
+            with open(self.base_dir / "outline_meta.json", "r", encoding="utf-8") as f:
+                return json.load(f)
+        except FileNotFoundError:
+            return {"current_volume_index": 0, "validated_chapters_count": 0}
+
+    def get_storage_info(self) -> dict:
+        """获取存储目录信息（用于断点恢复列表）
+
+        Returns:
+            包含小说标题、章节数、是否存在大纲和角色等信息
+        """
+        return {
+            "title": self.get_novel_title(),
+            "chapter_count": self.get_completed_chapter_count(),
+            "has_outline": self.has_outline(),
+            "has_characters": self.has_characters(),
+        }

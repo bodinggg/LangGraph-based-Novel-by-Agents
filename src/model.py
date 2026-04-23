@@ -1,6 +1,16 @@
 
 from pydantic import BaseModel
 from typing import List, Optional, Any, Literal
+from datetime import datetime
+
+# 角色关系模型
+class CharacterRelationship(BaseModel):
+    """角色关系模型"""
+    source: str  # 源角色名
+    target: str  # 目标角色名
+    relationship_type: str  # 关系类型：如"父子"、"兄弟"、"恋人"、"敌对"、"朋友"、"师生"等
+    description: str  # 关系描述
+    events: List[str] = []  # 体现关系的事件列表
 
 # 定义角色数据模型，继承BaseModel实现数据验证功能
 class Character(BaseModel):
@@ -10,6 +20,25 @@ class Character(BaseModel):
     goals: List[str]        # 角色的目标列表（如追求正义、寻找真相等）
     conflicts: List[str]    # 角色面临的冲突列表（如内心矛盾、外部对抗等）
     arc: str                # 角色的成长弧线（故事中角色的变化与发展轨迹）
+    relationships: List[CharacterRelationship] = []  # 与其他角色的关系列表
+
+# 工作流检查点模型
+class WorkflowCheckpoint(BaseModel):
+    """工作流检查点模型 - 用于断点续传"""
+    workflow_id: str
+    novel_title: str  # 用于恢复时加载 NovelStorage
+    saved_at: datetime
+    current_chapter_index: int = 0
+    completed_chapters: List[int] = []  # 已完成章节索引列表
+    current_node: str = ""  # 当前执行到的节点名
+    # 可序列化的状态字段
+    user_intent: str = ""
+    min_chapters: int = 10
+    raw_outline: Optional[str] = None
+    raw_master_outline: Optional[str] = None
+    validated_chapters: List[Any] = []  # ChapterOutline 列表
+    row_characters: Optional[str] = None
+    validated_characters: List[Any] = []  # Character 列表
 
 # 定义章节大纲数据模型，用于结构化章节的核心要素
 class ChapterOutline(BaseModel):
