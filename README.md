@@ -26,6 +26,8 @@
 
 ## 略大一些更新の日志
 
+2026-04-23：  修复断点恢复机制，checkpoint 恢复时优先从本地存储读取数据（`result/{title}_storage/`），修复节点 skip 路径中 `novel_storage` 丢失导致 `'NoneType' object is not iterable` 错误；新增 `tests/unit/test_app_resume.py`、`tests/unit/test_node_resume.py` 等单元测试
+
 2026-04-22：  新增桌面应用，使用 pywebview 封装 Gradio UI
 
 2026-04-16：  重构架构，新增 FastAPI 服务层，支持多客户端访问；统一入口 `app_gradio.py` 同时提供 Gradio UI 和 REST API；API 支持 OpenAI 和 Anthropic 两种格式；新增 pytest 测试框架，80+ 单元/集成测试覆盖
