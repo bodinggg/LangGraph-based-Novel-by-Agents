@@ -26,7 +26,7 @@
 
 ## 略大一些更新の日志
 
-2026-04-23：  新增断点恢复机制，支持从本地存储（`result/{title}_storage/`）恢复创作进度，checkpoint 作为位置指针；修复节点 skip 路径中 `novel_storage` 丢失导致 `'NoneType' object is not iterable` 错误；新增 `tests/unit/test_app_resume.py`、`tests/unit/test_node_resume.py` 等单元测试
+2026-04-23：  新增断点恢复机制，支持从本地存储（`result/{title}_storage/`）恢复创作进度，checkpoint 作为位置指针；修复节点 skip 路径中 `novel_storage` 丢失导致 `'NoneType' object is not iterable` 错误；Gradio UI 新增"继续创作"标签页，支持从本地已生成内容继续创作；新增 `tests/unit/test_app_resume.py`、`tests/unit/test_node_resume.py` 等单元测试
 
 2026-04-22：  新增桌面应用，使用 pywebview 封装 Gradio UI
 
