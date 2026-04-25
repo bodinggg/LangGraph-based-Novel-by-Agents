@@ -26,6 +26,8 @@
 
 ## 略大一些更新の日志
 
+2026-04-25：  新增批量并行写作模式（`execution_mode="parallel"`），通过 `ClientPoolModelManager` 单 Key 多客户端实现真正并行；新增客户端分配日志，清晰展示每章节使用的 `client_0`~`client_3`；通过 `contextvars` 实现协程安全的客户端 ID 追踪；UI 支持批次完成后批量展示章节
+
 2026-04-23：  新增断点恢复机制，支持从本地存储（`result/{title}_storage/`）恢复创作进度，checkpoint 作为位置指针；修复节点 skip 路径中 `novel_storage` 丢失导致 `'NoneType' object is not iterable` 错误；Gradio UI 新增"继续创作"标签页，支持从本地已生成内容继续创作；新增 `tests/unit/test_app_resume.py`、`tests/unit/test_node_resume.py` 等单元测试
 
 2026-04-22：  新增桌面应用，使用 pywebview 封装 Gradio UI
