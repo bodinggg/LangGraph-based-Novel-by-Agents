@@ -8,9 +8,18 @@ import asyncio
 import logging
 from typing import List, Callable, Any, Optional, Dict
 from dataclasses import dataclass
+from contextvars import ContextVar
 from openai import AsyncOpenAI
 
 logger = logging.getLogger(__name__)
+
+# ContextVar 用于在异步调用链中传递当前客户端 ID
+_current_client_id: ContextVar[Optional[str]] = ContextVar('current_client_id', default=None)
+
+
+def get_current_client_id() -> Optional[str]:
+    """获取当前协程执行的客户端 ID（需在 ClientPool.execute 上下文中调用）"""
+    return _current_client_id.get()
 
 
 @dataclass
@@ -112,7 +121,9 @@ class ClientPool:
 
         async with semaphore:
             stats.request_count += 1
-            logger.debug(f"[{client_id}] 开始执行")
+            # 设置 contextvar，供上层调用获取当前客户端 ID
+            token = _current_client_id.set(client_id)
+            logger.info(f"[{client_id}] 开始执行")
             try:
                 import time
                 start_time = time.time()
@@ -120,12 +131,14 @@ class ClientPool:
                 latency = time.time() - start_time
                 stats.success_count += 1
                 stats.total_latency += latency
-                logger.debug(f"[{client_id}] 完成，耗时 {latency:.2f}s")
+                logger.info(f"[{client_id}] 完成，耗时 {latency:.2f}s")
                 return result
             except Exception as e:
                 stats.failure_count += 1
                 logger.warning(f"[{client_id}] 失败: {str(e)[:80]}")
                 raise
+            finally:
+                _current_client_id.reset(token)
 
     async def execute_batch(
         self,

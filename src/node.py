@@ -5,7 +5,7 @@ from typing import Literal
 from src.model import (
     Character,
     ChapterOutline,
-    VolumeOutline,  
+    VolumeOutline,
     NovelOutline,
     ChapterContent,
     QualityEvaluation,
@@ -17,12 +17,13 @@ from src.agent import (
     CharacterAgent,
     ReflectAgent,
     EntityAgent,
-) 
+)
 from src.tool import extract_json
 from src.state import NovelState
 from src.log_config import loggers
 from src.config_loader import OutlineConfig
 from src.storage import NovelStorage
+from src.client_pool import get_current_client_id
 
 logger = loggers['node']
         
@@ -607,7 +608,11 @@ def batch_write_chapters_node(state: NovelState, writer_agent: WriterAgent) -> N
             temp_state.validated_chapter_draft = None
             temp_state.evaluate_attempt = 0
             temp_state.current_chapter_validated_error = None
-            return await writer_agent.async_write_chapter(temp_state)
+            result = await writer_agent.async_write_chapter(temp_state)
+            # 记录该章节使用的客户端 ID
+            client_id = get_current_client_id()
+            logger.info(f"[BATCH WRITE] 章节 {idx + 1} ({ch_outline.title}) 使用 {client_id}")
+            return result
         except Exception as e:
             logger.error(f"[BATCH] 第{idx + 1}章撰写失败: {e}")
             return f'{{"error": "第{idx + 1}章撰写失败: {str(e)}"}}'
