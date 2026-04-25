@@ -1,6 +1,9 @@
 import json
+import logging
 from typing import Optional, Tuple
 import re
+
+logger = logging.getLogger(__name__)
 
 
 def is_json_truncated(json_str: str) -> bool:
@@ -46,7 +49,7 @@ def extract_json(generated_text: str) -> Optional[str]:
         提取的JSON字符串，如果无法提取有效JSON则返回None
     """
     if not generated_text or not generated_text.strip():
-        print("输入文本为空")
+        logger.debug("输入文本为空")
         return None
 
     try:
@@ -61,9 +64,9 @@ def extract_json(generated_text: str) -> Optional[str]:
             except json.JSONDecodeError as e:
                 # 如果是截断错误（行号超过实际行数），说明JSON不完整
                 if is_json_truncated(json_content):
-                    print(f"提取的JSON块不完整（可能被截断）: {str(e)[:50]}")
+                    logger.debug(f"提取的JSON块不完整（可能被截断）: {str(e)[:50]}")
                     return None
-                print("提取的JSON块格式无效，尝试其他提取方式")
+                logger.debug("提取的JSON块格式无效，尝试其他提取方式")
 
         # 如果没有找到标记包裹的JSON，尝试匹配纯JSON对象
         json_obj_match = re.search(r'\{\s*"[\w"]+":[\s\S]*\}', generated_text)
@@ -74,9 +77,9 @@ def extract_json(generated_text: str) -> Optional[str]:
                 return json_content
             except json.JSONDecodeError as e:
                 if is_json_truncated(json_content):
-                    print(f"提取的JSON对象不完整（可能被截断）: {str(e)[:50]}")
+                    logger.debug(f"提取的JSON对象不完整（可能被截断）: {str(e)[:50]}")
                     return None
-                print("提取的JSON对象格式无效")
+                logger.debug("提取的JSON对象格式无效")
 
         # 尝试匹配JSON数组
         json_array_match = re.search(r'\[\s*\{\s*"[\w"]+":[\s\S]*\}\s*\]', generated_text)
@@ -87,14 +90,14 @@ def extract_json(generated_text: str) -> Optional[str]:
                 return json_content
             except json.JSONDecodeError as e:
                 if is_json_truncated(json_content):
-                    print(f"提取的JSON数组不完整（可能被截断）: {str(e)[:50]}")
+                    logger.debug(f"提取的JSON数组不完整（可能被截断）: {str(e)[:50]}")
                     return None
-                print("提取的JSON数组格式无效")
+                logger.debug("提取的JSON数组格式无效")
 
         # 如果所有尝试都失败，打印调试信息
-        print("无法找到有效的JSON结构")
+        logger.debug("无法找到有效的JSON结构")
         return None
 
     except Exception as e:
-        print(f"提取JSON时出错: {str(e)}")
+        logger.debug(f"提取JSON时出错: {str(e)}")
         return None

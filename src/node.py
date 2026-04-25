@@ -1,4 +1,5 @@
 import json
+import asyncio
 from typing import Literal
 
 from src.model import (
@@ -529,7 +530,147 @@ def write_chapter_node(state: NovelState, writer_agent: WriterAgent) -> NovelSta
         "raw_current_chapter": raw_chapter,
         "attempt": state.attempt + 1,
         "evaluate_attempt": state.evaluate_attempt + 1
-    }   
+    }
+
+
+async def async_write_chapter_node(state: NovelState, writer_agent: WriterAgent) -> NovelState:
+    """异步撰写单章内容的节点（用于并行模式）"""
+
+    revision_feedback = state.validated_evaluation
+    current_index = state.current_chapter_index
+
+    outline = state.novel_storage.load_outline()
+
+    chapter_outline = outline.chapters[current_index]
+    if revision_feedback:
+        logger.info(f"[ASYNC] 根据反馈修改第{current_index + 1}章: {chapter_outline.title}(第{state.evaluate_attempt + 1}次修改)")
+    else:
+        logger.info(f"[ASYNC] 正在撰写第{current_index + 1}章: {chapter_outline.title}(第{state.attempt+1}次重写)")
+
+    # 调用异步写作代理生成章节内容
+    raw_chapter = await writer_agent.async_write_chapter(state)
+
+    # 提取并解析JSON
+    extracted_json = extract_json(raw_chapter)
+    if extracted_json:
+        raw_chapter = extracted_json
+        logger.info("【异步单章撰写】成功提取章节JSON内容")
+    else:
+        logger.info("【异步单章撰写】章节JSON提取失败，内容可能被截断")
+        return {
+            "raw_current_chapter": raw_chapter,
+            "current_chapter_validated_error": "章节JSON提取失败，内容可能被截断，请重试",
+            "attempt": state.attempt + 1,
+            "evaluate_attempt": state.evaluate_attempt + 1
+        }
+    return {
+        "raw_current_chapter": raw_chapter,
+        "attempt": state.attempt + 1,
+        "evaluate_attempt": state.evaluate_attempt + 1
+    }
+
+
+def batch_write_chapters_node(state: NovelState, writer_agent: WriterAgent) -> NovelState:
+    """批量撰写多章内容的节点（用于并行模式）
+
+    根据当前章节索引和批次大小，并行生成多个章节
+    """
+    current_index = state.current_chapter_index
+    batch_size = getattr(state, 'batch_size', 3)  # 默认批次大小为3
+
+    outline = state.novel_storage.load_outline()
+    total_chapters = len(outline.chapters)
+
+    # 计算本次批次的章节范围
+    start_idx = current_index
+    end_idx = min(current_index + batch_size, total_chapters)
+
+    logger.info(f"[BATCH] 开始批量撰写章节 {start_idx + 1} ~ {end_idx}，共 {end_idx - start_idx} 章")
+
+    # 获取待写章节的大纲
+    chapters_to_write = []
+    for i in range(start_idx, end_idx):
+        chapters_to_write.append({
+            "index": i,
+            "outline": outline.chapters[i]
+        })
+
+    # 批量生成
+    async def write_one(idx: int, ch_outline):
+        try:
+            logger.info(f"[BATCH] 异步撰写第{idx + 1}章: {ch_outline.title}")
+            # 创建临时状态（每个章节独立状态，避免污染）
+            temp_state = state.model_copy()
+            temp_state.current_chapter_index = idx
+            # 重置评估相关字段 - 批量新章节不需要revision反馈
+            temp_state.validated_evaluation = None
+            temp_state.validated_chapter_draft = None
+            temp_state.evaluate_attempt = 0
+            temp_state.current_chapter_validated_error = None
+            return await writer_agent.async_write_chapter(temp_state)
+        except Exception as e:
+            logger.error(f"[BATCH] 第{idx + 1}章撰写失败: {e}")
+            return f'{{"error": "第{idx + 1}章撰写失败: {str(e)}"}}'
+
+    async def run_batch():
+        tasks = [write_one(ch["index"], ch["outline"]) for ch in chapters_to_write]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        return results
+
+    # 同步执行异步批量任务
+    results = asyncio.run(run_batch())
+
+    # 处理结果
+    batch_results = []
+    for i, result in enumerate(results):
+        # 处理异常情况
+        if isinstance(result, Exception):
+            logger.error(f"[BATCH] 第{start_idx + i + 1}章生成异常: {result}")
+            batch_results.append({
+                "chapter_index": start_idx + i,
+                "raw_chapter": f'{{"error": "第{start_idx + i + 1}章生成异常: {str(result)}"}}',
+                "success": False,
+                "error": str(result)
+            })
+            continue
+
+        raw_chapter = result
+        if isinstance(raw_chapter, Exception):
+            raw_chapter = str(raw_chapter)
+
+        logger.info(f"[BATCH DEBUG] 第{start_idx + i + 1}章原始响应前200字符: {str(raw_chapter)[:200]}")
+        extracted_json = extract_json(raw_chapter)
+        logger.info(f"[BATCH DEBUG] 第{start_idx + i + 1}章extract_json结果: {str(extracted_json)[:200] if extracted_json else 'None'}")
+        if extracted_json:
+            batch_results.append({
+                "chapter_index": start_idx + i,
+                "raw_chapter": extracted_json,
+                "success": True
+            })
+        else:
+            # 保存原始响应（用于调试）和错误信息
+            batch_results.append({
+                "chapter_index": start_idx + i,
+                "raw_chapter": raw_chapter,
+                "raw_response_preview": str(raw_chapter)[:500] if raw_chapter else "空响应",
+                "success": False,
+                "error": "章节JSON提取失败，内容可能被截断"
+            })
+            logger.info(f"[BATCH] 第{start_idx + i + 1}章JSON提取失败，将原始响应保存用于调试")
+
+    # 更新状态
+    update = {
+        "batch_results": batch_results,
+        "batch_start_index": start_idx,
+        "batch_end_index": end_idx - 1,
+    }
+
+    # 检查是否有失败的
+    failed = [r for r in batch_results if not r["success"]]
+    if failed:
+        update["current_chapter_validated_error"] = f"批量中{failed[0]['chapter_index'] + 1}章JSON提取失败"
+
+    return update   
     
 def validate_chapter_node(state:NovelState) -> NovelState:
     
@@ -765,6 +906,91 @@ def validate_entities_node(state: NovelState) -> NovelState:
             "entities_validated_error": f"实体生成失败: {str(e)}"
         }
 
+
+async def async_generate_entities_node(state: NovelState, entity_agent: EntityAgent) -> NovelState:
+    """异步生成实体列表的节点（用于并行模式）"""
+    logger.info(f"[ASYNC] 正在生成第{state.current_chapter_index + 1}章实体列表(第{state.attempt + 1}次尝试)...")
+    raw_entities = await entity_agent.async_generate_entities(state)
+
+    extracted_json = extract_json(raw_entities)
+    if extracted_json:
+        raw_entities = extracted_json
+        logger.info("【异步实体识别】成功提取实体JSON内容")
+    else:
+        logger.info("【异步实体识别】实体JSON提取失败，内容可能被截断")
+        return {
+            "novel_storage": state.novel_storage,
+            "attempt": state.attempt + 1,
+            "raw_entities": raw_entities,
+            "entities_validated_error": "实体JSON提取失败，内容可能被截断，请重试"
+        }
+
+    return {
+        "novel_storage": state.novel_storage,
+        "attempt": state.attempt + 1,
+        "raw_entities": raw_entities
+    }
+
+
+def batch_generate_entities_node(state: NovelState, entity_agent: EntityAgent) -> NovelState:
+    """批量生成实体列表的节点（用于并行模式）
+
+    根据批次结果，批量提取多个章节的实体
+    """
+    batch_results = getattr(state, 'batch_results', [])
+    if not batch_results:
+        logger.info("[BATCH] 无批次结果，跳过批量实体生成")
+        return {"novel_storage": state.novel_storage}
+
+    logger.info(f"[BATCH] 开始批量生成实体，共 {len(batch_results)} 章")
+
+    async def generate_one(chapter_index: int, raw_chapter: str):
+        logger.info(f"[BATCH] 异步生成第{chapter_index + 1}章实体")
+        # 创建临时状态
+        chapter_content = extract_json(raw_chapter)
+        if chapter_content:
+            try:
+                content_dict = json.loads(chapter_content) if isinstance(chapter_content, str) else chapter_content
+                temp_state = state.model_copy()
+                temp_state.current_chapter_index = chapter_index
+                temp_state.validated_chapter_draft = ChapterContent(**content_dict)
+                return await entity_agent.async_generate_entities(temp_state)
+            except Exception as e:
+                logger.info(f"[BATCH] 第{chapter_index + 1}章实体生成失败: {e}")
+                return None
+        return None
+
+    async def run_batch():
+        tasks = [generate_one(r["chapter_index"], r["raw_chapter"]) for r in batch_results if r.get("success")]
+        return await asyncio.gather(*tasks)
+
+    # 同步执行异步批量任务
+    results = asyncio.run(run_batch())
+
+    # 处理结果
+    entity_results = []
+    for i, raw_entities in enumerate(results):
+        if raw_entities:
+            extracted = extract_json(raw_entities)
+            if extracted:
+                entity_results.append({
+                    "chapter_index": batch_results[i]["chapter_index"] if i < len(batch_results) else i,
+                    "raw_entities": extracted,
+                    "success": True
+                })
+            else:
+                entity_results.append({
+                    "chapter_index": batch_results[i]["chapter_index"] if i < len(batch_results) else i,
+                    "success": False,
+                    "error": "实体JSON提取失败"
+                })
+
+    return {
+        "batch_entity_results": entity_results,
+        "novel_storage": state.novel_storage,
+    }
+
+
 def check_entities_node(state: NovelState) -> Literal["success", "retry", "failure"]:
     """检查实体列表生成结果"""
     if state.entities_validated_error is None:
@@ -809,3 +1035,119 @@ def check_chapter_completion_node(state: NovelState) -> Literal["continue", "com
     else:
         logger.info("接受章节, 已经完成所有章节写作")
         return "complete"
+
+
+# -------------------- 执行模式路由节点 --------------------
+def route_to_writing_node(state: NovelState) -> NovelState:
+    """路由到串行或并行写作节点"""
+    logger.info(f"[ROUTING] 执行模式: {state.execution_mode}")
+    return {
+        "novel_storage": state.novel_storage,
+        "execution_mode": state.execution_mode
+    }
+
+
+def check_execution_mode_node(state: NovelState) -> Literal["serial", "parallel"]:
+    """检查执行模式，决定路由到串行还是并行写作"""
+    mode = getattr(state, 'execution_mode', 'serial')
+    logger.info(f"[MODE CHECK] 执行模式: {mode}")
+    return mode
+
+
+def batch_validate_chapters_node(state: NovelState) -> NovelState:
+    """批量验证章节节点 - 验证并保存批量生成的章节
+
+    批量模式流程：
+    1. batch_write_chapters 并行生成多个章节
+    2. batch_validate_chapters 验证并保存所有章节
+    3. 根据模式决定下一步：serial模式继续串行评估，parallel模式批量评估
+    """
+    batch_results = getattr(state, 'batch_results', None)
+    if batch_results is None:
+        logger.info("[BATCH VALIDATE] 无批次结果，跳过")
+        return {
+            "novel_storage": state.novel_storage,
+            "current_chapter_validated_error": "无批次结果"
+        }
+
+    logger.info(f"[BATCH VALIDATE] 开始验证并保存 {len(batch_results)} 个章节")
+
+    saved_count = 0
+    errors = []
+    batch_chapters = []  # 本批次验证通过的章节列表，供UI批量显示
+
+    for result in batch_results:
+        chapter_index = result.get("chapter_index", 0)
+        raw_chapter = result.get("raw_chapter", "")
+        success = result.get("success", False)
+
+        logger.info(f"[BATCH VALIDATE DEBUG] 第 {chapter_index + 1} 章: success={success}, raw_chapter前100字符={str(raw_chapter)[:100]}")
+
+        try:
+            chapter_data = json.loads(raw_chapter)
+            chapter_content = ChapterContent(**chapter_data)
+
+            # 保存章节
+            state.novel_storage.save_chapter(chapter_index + 1, chapter_content)
+            saved_count += 1
+            batch_chapters.append(chapter_content)  # 收集验证通过的章节
+            logger.info(f"[BATCH VALIDATE] 第 {chapter_index + 1} 章保存成功")
+        except json.JSONDecodeError as e:
+            errors.append(f"第 {chapter_index + 1} 章 JSON 解析失败: {str(e)}")
+            logger.info(f"[BATCH VALIDATE] 第 {chapter_index + 1} 章 JSON 解析失败: {str(e)[:100]}")
+        except Exception as e:
+            errors.append(f"第 {chapter_index + 1} 章保存失败: {str(e)}")
+            logger.info(f"[BATCH VALIDATE] 第 {chapter_index + 1} 章保存失败: {e}")
+
+    # 计算下一章节索引
+    last_index = batch_results[-1].get("chapter_index", 0) if batch_results else 0
+    next_chapter_index = last_index + 1
+
+    logger.info(f"[BATCH VALIDATE] 批量完成：成功 {saved_count}/{len(batch_results)} 章，返回 batch_chapters 共 {len(batch_chapters)} 章")
+
+    update = {
+        "novel_storage": state.novel_storage,
+        "current_chapter_index": next_chapter_index,
+        "evaluate_attempt": 0,
+        "validated_chapter_draft": batch_chapters[-1] if batch_chapters else None,  # 最后一个章节
+        "batch_chapters": batch_chapters,  # 本批次所有章节，供UI批量加载
+        "validated_evaluation": None,
+        "batch_results": None,  # 清除批次结果，避免状态污染
+    }
+
+    if errors:
+        update["current_chapter_validated_error"] = errors[0]
+
+    return update
+
+
+def check_batch_completion_node(state: NovelState) -> Literal["continue_serial", "continue_parallel", "complete"]:
+    """检查批量章节完成情况，决定下一步
+
+    Returns:
+        - continue_serial: 写作完成，进入串行评估流程
+        - continue_parallel: 并行模式，继续下一批写作
+        - complete: 所有章节完成（串行模式直接完成）
+    """
+    total_chapters = len(state.novel_storage.load_outline().chapters)
+    current_index = state.current_chapter_index
+    batch_results = getattr(state, 'batch_results', [])
+
+    logger.info(f"[BATCH CHECK] 当前第 {current_index + 1} 章 / 共 {total_chapters} 章，执行模式: {state.execution_mode}，batch_results: {len(batch_results) if batch_results else 'None'}")
+
+    # 如果当前批次没有结果，说明可能已经完成或出错
+    if not batch_results and current_index > 0:
+        logger.info("[BATCH CHECK] 无批次结果但已有进度，检查是否完成")
+
+    # 检查是否所有章节已完成写作
+    if current_index >= total_chapters:
+        logger.info(f"[BATCH CHECK] ✅ 所有章节写作完成 (current={current_index}, total={total_chapters})，返回 complete")
+        return "complete"  # 并行模式完成
+
+    # 根据执行模式决定路由
+    if state.execution_mode == "parallel":
+        logger.info("[BATCH CHECK] 并行模式，继续下一批写作")
+        return "continue_parallel"
+    else:
+        logger.info("[BATCH CHECK] 串行模式，回到串行评估流程")
+        return "continue_serial"

@@ -2,6 +2,7 @@
 思考过程日志记录器
 """
 import os
+from contextvars import ContextVar
 from datetime import datetime
 from typing import Any, Optional
 
@@ -36,11 +37,11 @@ class ThinkingLogger:
             f.write("=" * 80 + "\n\n")
 
     def log_thinking(self,
-                    agent_name: str,
-                    node_name: str,
-                    prompt_content: Any,
-                    response_content: str,
-                    error_message: Optional[str] = None):
+                     agent_name: str,
+                     node_name: str,
+                     prompt_content: Any,
+                     response_content: str,
+                     error_message: Optional[str] = None):
         """记录一次思考过程到日志文件"""
 
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -67,16 +68,22 @@ class ThinkingLogger:
         print(f"[LOG] {agent_name} -> {node_name} ({timestamp})")
 
 
-# 全局日志记录器实例
-_global_logger = None
+# 线程/协程安全的上下文变量
+_logger_var: ContextVar[Optional[ThinkingLogger]] = ContextVar('logger', default=None)
+
+
+def get_logger() -> ThinkingLogger:
+    """获取当前上下文的 logger 实例（线程/协程安全）"""
+    logger = _logger_var.get()
+    if logger is None:
+        logger = ThinkingLogger()
+        _logger_var.set(logger)
+    return logger
 
 
 def get_simple_logger() -> ThinkingLogger:
-    """获取全局简单日志记录器实例"""
-    global _global_logger
-    if _global_logger is None:
-        _global_logger = ThinkingLogger()
-    return _global_logger
+    """获取全局简单日志记录器实例（向后兼容）"""
+    return get_logger()
 
 
 def create_disabled_logger() -> ThinkingLogger:
@@ -85,12 +92,12 @@ def create_disabled_logger() -> ThinkingLogger:
 
 
 def log_agent_thinking(agent_name: str,
-                      node_name: str,
-                      prompt_content: Any,
-                      response_content: str,
-                      error_message: Optional[str] = None):
+                       node_name: str,
+                       prompt_content: Any,
+                       response_content: str,
+                       error_message: Optional[str] = None):
     """便捷函数：记录Agent思考过程到日志文件"""
-    logger = get_simple_logger()
+    logger = get_logger()
     logger.log_thinking(
         agent_name=agent_name,
         node_name=node_name,

@@ -1,6 +1,7 @@
 from typing import Dict, Any, List
 import json
 from pathlib import Path
+import asyncio
 
 from src.prompt import *
 from src.enhanced_prompts import get_prompt_template
@@ -20,21 +21,21 @@ class OutlineGeneratorAgent:
         self.model_manager = model_manager
         self.config = config
 
-    # 总纲生成(卷册划分)    
+    # 总纲生成(卷册划分)
     def generate_master_outline(self, user_intent: str)->str:
         min_chapters = self.config.min_chapters
         volume = self.config.volume
         master_prompt = MASTER_OUTLINE_PROMPT.format(
             user_intent=user_intent, min_chapters=min_chapters, volume=volume
         )
-        
+
         messages = [
             {"role":"system", "content": OUTLINE_INSTRUCT},
             {"role":"user", "content":master_prompt}
         ]
 
         response = self.model_manager.generate(messages, self.config)
-        
+
         # 记录思考过程
         log_agent_thinking(
             agent_name="OutlineGeneratorAgent",
@@ -42,7 +43,31 @@ class OutlineGeneratorAgent:
             prompt_content=messages,
             response_content=response
         )
-        
+
+        return response
+
+    async def async_generate_master_outline(self, user_intent: str) -> str:
+        """异步版本的总纲生成"""
+        min_chapters = self.config.min_chapters
+        volume = self.config.volume
+        master_prompt = MASTER_OUTLINE_PROMPT.format(
+            user_intent=user_intent, min_chapters=min_chapters, volume=volume
+        )
+
+        messages = [
+            {"role": "system", "content": OUTLINE_INSTRUCT},
+            {"role": "user", "content": master_prompt}
+        ]
+
+        response = await self.model_manager.async_generate(messages, self.config)
+
+        log_agent_thinking(
+            agent_name="OutlineGeneratorAgent",
+            node_name="async_generate_master_outline",
+            prompt_content=messages,
+            response_content=response
+        )
+
         return response
         
     # 基于总纲生成单卷
@@ -118,7 +143,7 @@ class OutlineGeneratorAgent:
         ]
         
         response = self.model_manager.generate(messages, self.config)
-        
+
         # 记录思考过程
         log_agent_thinking(
             agent_name="OutlineGeneratorAgent",
@@ -127,7 +152,34 @@ class OutlineGeneratorAgent:
             response_content=response,
             error_message=error_message
         )
-        
+
+        return response
+
+    async def async_generate_outline(self, state: NovelState) -> str:
+        """异步版本的大纲生成"""
+        user_intent = state.user_intent
+        error_message = state.outline_validated_error
+
+        user_message = OUTLINE_PROMPT.format(user_intent=user_intent, min_chapters=self.config.min_chapters)
+
+        if error_message:
+            user_message = f"之前的尝试出现错误: {error_message}\n请修正错误并重新生成符合格式的大纲。特别注意要用```json和```正确包裹JSON内容。\n{user_message}"
+
+        messages = [
+            {"role": "system", "content": OUTLINE_INSTRUCT},
+            {"role": "user", "content": user_message}
+        ]
+
+        response = await self.model_manager.async_generate(messages, self.config)
+
+        log_agent_thinking(
+            agent_name="OutlineGeneratorAgent",
+            node_name="async_generate_outline",
+            prompt_content=messages,
+            response_content=response,
+            error_message=error_message
+        )
+
         return response
 
 # 角色代理 - 用于生成角色档案
@@ -179,7 +231,7 @@ class CharacterAgent:
         ]
         
         response = self.model_manager.generate(messages, self.config)
-        
+
         # 记录思考过程
         log_agent_thinking(
             agent_name="CharacterAgent",
@@ -188,7 +240,53 @@ class CharacterAgent:
             response_content=response,
             error_message=error_message
         )
-        
+
+        return response
+
+    async def async_generate_characters(self, state: NovelState) -> str:
+        """异步版本的角色生成"""
+        error_message = state.characters_validated_error
+
+        outline = state.novel_storage.load_outline()
+        characters_list = outline.characters
+
+        character_context = {}
+        for name in characters_list:
+            character_context[name] = []
+
+        for chapter in outline.chapters:
+            for char in chapter.characters_involved:
+                if char in character_context:
+                    character_context[char].append(f"在《{chapter.title}》中: {'; '.join(chapter.key_events)}")
+
+        context = f"小说标题: {outline.title}\n类型: {outline.genre}\n背景: {outline.setting}\n情节概要: {outline.plot_summary}\n\n"
+        context = "角色列表及他们在故事中的关键事件:\n"
+        for name, events in character_context.items():
+            context += f"- {name}: {'; '.join(events[:3])}\n"
+
+        prompt = CHARACTER_PROMPT.format(
+            outline_title=outline.title,
+            outline_genre=outline.genre,
+            outline_setting=outline.setting,
+            outline_plot_summary=outline.plot_summary,
+            character_list=', '.join(characters_list),
+            context=context
+        )
+        if error_message:
+            prompt += f"\n\n之前的尝试出现错误: {error_message}\n请修正错误并重新生成角色档案。"
+
+        messages = [{"role": "user", "content": prompt}]
+
+        response = await self.model_manager.async_generate(messages, self.config)
+
+        log_agent_thinking(
+            agent_name="CharacterAgent",
+            node_name="async_generate_characters",
+            prompt_content=messages,
+            response_content=response,
+            error_message=error_message
+        )
+
         return response
     
 # 写作代理 - 用于单章撰写
@@ -254,15 +352,64 @@ class WriterAgent:
             response_content=response,
             error_message=error_message
         )
-        
+
+        return response
+
+    async def async_write_chapter(self, state: NovelState) -> str:
+        """异步版本的章节撰写"""
+        error_message = state.current_chapter_validated_error
+        characters = state.novel_storage.load_characters()
+        outline = state.novel_storage.load_outline()
+
+        characters = [c for c in characters if c.name in outline.chapters[state.current_chapter_index].characters_involved]
+        current_chapter_index = state.current_chapter_index
+
+        evaluation = state.validated_evaluation
+        current_content = state.validated_chapter_draft
+
+        processed_feedback = None
+        if evaluation and not evaluation.passes:
+            processed_feedback = self.feedback_processor.process_evaluation(
+                evaluation,
+                current_content,
+                state.evaluate_attempt
+            )
+
+        strategy = "maintain_current"
+        if processed_feedback:
+            strategy = processed_feedback.revision_strategy
+
+        prompt_template = get_prompt_template(strategy)
+        base_params = self._prepare_base_params(state, characters, outline, current_chapter_index)
+
+        if strategy == "maintain_current" or not processed_feedback:
+            prompt = self._generate_base_prompt(prompt_template, base_params, error_message)
+        else:
+            prompt = self._generate_revision_prompt(
+                prompt_template, base_params, processed_feedback, current_content
+            )
+        messages = [{"role": "user", "content": prompt}]
+
+        response = await self.model_manager.async_generate(messages, self.config)
+
+        log_agent_thinking(
+            agent_name="WriterAgent",
+            node_name="async_write_chapter",
+            prompt_content=messages,
+            response_content=response,
+            error_message=error_message
+        )
+
         return response
 
         
     
     def _prepare_base_params(self, state: NovelState, characters: List, outline, current_chapter_index: int) -> Dict:
         """准备基础参数，简化promt注入变量逻辑"""
-        pre_chapter = state.novel_storage.load_chapter(current_chapter_index).content[-100:] if current_chapter_index > 0 else "无"
-        pre_entity = state.novel_storage.load_entity(current_chapter_index-1) if current_chapter_index > 0 else None
+        # 加载上一章内容（如果存在）
+        prev_chapter = state.novel_storage.load_chapter(current_chapter_index - 1) if current_chapter_index > 0 else None
+        pre_chapter = prev_chapter.content[-100:] if prev_chapter else "无"
+        pre_entity = state.novel_storage.load_entity(current_chapter_index - 1) if current_chapter_index > 0 else None
         
         return {
             "genre": outline.genre,
@@ -428,7 +575,45 @@ class ReflectAgent:
             response_content=response,
             error_message=error_message
         )
-        
+
+        return response
+
+    async def async_evaluate_chapter(self, state: NovelState) -> str:
+        """异步版本的章节评估"""
+        error_message = state.evaluation_validated_error
+        outline = state.novel_storage.load_outline()
+        current_chapter_index = state.current_chapter_index
+        chapter_content = state.validated_chapter_draft
+        chapter_outline = outline.chapters[current_chapter_index]
+        characters = state.novel_storage.load_characters()
+
+        involved_chars = [char for char in characters
+                         if char.name in chapter_outline.characters_involved]
+
+        context = self._build_evaluation_context(
+            chapter_content, chapter_outline, involved_chars, outline, current_chapter_index
+        )
+
+        if error_message:
+            context += f"\n\n之前的评估错误: {error_message}"
+
+        user_message = f"请基于以下标准化评测框架对章节内容进行全面评估:\n{context}\n请生成符合格式的评估JSON:"
+
+        messages = [
+            {"role": "system", "content": self.system_prompt},
+            {"role": "user", "content": user_message}
+        ]
+
+        response = await self.model_manager.async_generate(messages, self.config)
+
+        log_agent_thinking(
+            agent_name="ReflectAgent",
+            node_name="async_evaluate_chapter",
+            prompt_content=messages,
+            response_content=response,
+            error_message=error_message
+        )
+
         return response
 
     def generate_evaluation_report(self, state:NovelState):
@@ -541,5 +726,26 @@ class EntityAgent:
             prompt_content=messages,
             response_content=response
         )
-        
+
+        return response
+
+    async def async_generate_entities(self, state: NovelState):
+        """异步版本的实体生成"""
+        text_content = state.validated_chapter_draft.content
+        chapter_name = state.validated_chapter_draft.title
+
+        messages = [
+            {"role": "system", "content": self.system_prompt},
+            {"role": "user", "content": WORLD_USER_PROMPT.format(chapter_name=chapter_name, text_content=text_content)}
+        ]
+
+        response = await self.model_manager.async_generate(messages, self.config)
+
+        log_agent_thinking(
+            agent_name="EntityAgent",
+            node_name="async_generate_entities",
+            prompt_content=messages,
+            response_content=response
+        )
+
         return response

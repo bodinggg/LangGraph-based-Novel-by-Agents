@@ -4,7 +4,7 @@ Unit tests for src/storage.py resume functionality
 import pytest
 import shutil
 from pathlib import Path
-from src.storage import NovelStorage
+from src.storage import NovelStorage, sanitize_novel_title
 from src.model import NovelOutline, Character, ChapterContent
 
 
@@ -120,3 +120,64 @@ class TestStateManagerListNovels:
         assert test_novel is not None
         assert test_novel["chapter_count"] == 1
         assert test_novel["has_outline"] is True
+
+
+class TestSanitizeNovelTitle:
+    """Tests for sanitize_novel_title path traversal prevention"""
+
+    def test_rejects_path_traversal_with_dots(self):
+        """Verify path traversal with '..' is rejected"""
+        with pytest.raises(ValueError, match="Invalid novel title"):
+            sanitize_novel_title("../../../etc")
+
+        with pytest.raises(ValueError, match="Invalid novel title"):
+            sanitize_novel_title("novel/../../etc")
+
+        with pytest.raises(ValueError, match="Invalid novel title"):
+            sanitize_novel_title("..")
+
+    def test_rejects_forward_slash(self):
+        """Verify forward slash is rejected"""
+        with pytest.raises(ValueError, match="Invalid novel title"):
+            sanitize_novel_title("novel/secret")
+
+        with pytest.raises(ValueError, match="Invalid novel title"):
+            sanitize_novel_title("/etc/passwd")
+
+    def test_rejects_backslash(self):
+        """Verify backslash is rejected (Windows path traversal)"""
+        with pytest.raises(ValueError, match="Invalid novel title"):
+            sanitize_novel_title("novel\\..\\..\\etc")
+
+        with pytest.raises(ValueError, match="Invalid novel title"):
+            sanitize_novel_title("C:\\Windows\\System32")
+
+    def test_rejects_null_byte(self):
+        """Verify null byte is rejected"""
+        with pytest.raises(ValueError, match="Invalid novel title"):
+            sanitize_novel_title("novel\0secret")
+
+    def test_rejects_empty_title(self):
+        """Verify empty title is rejected"""
+        with pytest.raises(ValueError, match="cannot be empty"):
+            sanitize_novel_title("")
+
+        with pytest.raises(ValueError, match="cannot be empty"):
+            sanitize_novel_title("   ")
+
+    def test_rejects_too_long_title(self):
+        """Verify overly long title is rejected"""
+        long_title = "a" * 201
+        with pytest.raises(ValueError, match="too long"):
+            sanitize_novel_title(long_title)
+
+    def test_accepts_valid_title(self):
+        """Verify normal titles pass through unchanged"""
+        assert sanitize_novel_title("我的小说") == "我的小说"
+        assert sanitize_novel_title("Test Novel 123") == "Test Novel 123"
+        assert sanitize_novel_title("小说_title-123") == "小说_title-123"
+
+    def test_strips_whitespace(self):
+        """Verify whitespace is stripped"""
+        assert sanitize_novel_title("  小说名  ") == "小说名"
+        assert sanitize_novel_title("\t标题\n") == "标题"

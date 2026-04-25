@@ -2,7 +2,8 @@
 Tests for src/agent.py - TDD RED phase
 """
 import pytest
-from unittest.mock import MagicMock, patch
+import asyncio
+from unittest.mock import MagicMock, patch, AsyncMock
 from src.agent import (
     OutlineGeneratorAgent,
     CharacterAgent,
@@ -14,6 +15,13 @@ from src.state import NovelState
 from src.model import NovelOutline, ChapterOutline, Character, ChapterContent, VolumeOutline
 from src.config_loader import BaseConfig
 from src.storage import NovelStorage
+
+
+def async_test(coro):
+    """Decorator to run async coroutines in sync test context"""
+    def wrapper(*args, **kwargs):
+        return asyncio.run(coro(*args, **kwargs))
+    return wrapper
 
 
 @pytest.fixture
@@ -144,6 +152,25 @@ class TestOutlineGeneratorAgent:
 
         assert isinstance(result, str)
 
+    def test_async_generate_outline_returns_string(self, mock_model_manager, base_config, sample_state):
+        """Test async_generate_outline returns a string"""
+        agent = OutlineGeneratorAgent(mock_model_manager, base_config)
+        mock_model_manager.async_generate = AsyncMock(return_value='{"title": "测试大纲"}')
+
+        result = asyncio.run(agent.async_generate_outline(sample_state))
+
+        assert isinstance(result, str)
+        mock_model_manager.async_generate.assert_called_once()
+
+    def test_async_generate_master_outline_returns_string(self, mock_model_manager, base_config):
+        """Test async_generate_master_outline returns a string"""
+        agent = OutlineGeneratorAgent(mock_model_manager, base_config)
+        mock_model_manager.async_generate = AsyncMock(return_value='{"title": "测试总纲"}')
+
+        result = asyncio.run(agent.async_generate_master_outline("创作一个玄幻小说"))
+
+        assert isinstance(result, str)
+
 
 class TestCharacterAgent:
     """Test CharacterAgent"""
@@ -172,6 +199,16 @@ class TestCharacterAgent:
         # Should accept NovelState without raising
         result = agent.generate_characters(sample_state)
         assert result is not None
+
+    def test_async_generate_characters_returns_string(self, mock_model_manager, base_config, sample_state):
+        """Test async_generate_characters returns a string"""
+        agent = CharacterAgent(mock_model_manager, base_config)
+        mock_model_manager.async_generate = AsyncMock(return_value='[{"name": "角色A"}]')
+
+        result = asyncio.run(agent.async_generate_characters(sample_state))
+
+        assert isinstance(result, str)
+        mock_model_manager.async_generate.assert_called_once()
 
 
 class TestWriterAgent:
@@ -213,6 +250,20 @@ class TestWriterAgent:
         # Should accept NovelState without raising
         result = agent.write_chapter(sample_state)
         assert result is not None
+
+    def test_async_write_chapter_returns_string(self, mock_model_manager, base_config, sample_state):
+        """Test async_write_chapter returns a string"""
+        agent = WriterAgent(mock_model_manager, base_config)
+        mock_model_manager.async_generate = AsyncMock(return_value='{"title": "第一章", "content": "测试内容"}')
+
+        sample_state.current_chapter_index = 0
+        sample_state.validated_chapter_draft = None
+        sample_state.validated_evaluation = None
+
+        result = asyncio.run(agent.async_write_chapter(sample_state))
+
+        assert isinstance(result, str)
+        mock_model_manager.async_generate.assert_called_once()
 
 
 class TestReflectAgent:
@@ -258,6 +309,22 @@ class TestReflectAgent:
         result = agent.evaluate_chapter(sample_state)
         assert result is not None
 
+    def test_async_evaluate_chapter_returns_string(self, mock_model_manager, base_config, sample_state):
+        """Test async_evaluate_chapter returns a string"""
+        agent = ReflectAgent(mock_model_manager, base_config)
+        mock_model_manager.async_generate = AsyncMock(return_value='{"score": 7, "passes": true}')
+
+        sample_state.current_chapter_index = 0
+        sample_state.validated_chapter_draft = ChapterContent(
+            title="第一章 测试章节",
+            content="测试章节内容"
+        )
+
+        result = asyncio.run(agent.async_evaluate_chapter(sample_state))
+
+        assert isinstance(result, str)
+        mock_model_manager.async_generate.assert_called_once()
+
 
 class TestEntityAgent:
     """Test EntityAgent"""
@@ -300,3 +367,19 @@ class TestEntityAgent:
         # Should accept NovelState without raising
         result = agent.generate_entities(sample_state)
         assert result is not None
+
+    def test_async_generate_entities_returns_string(self, mock_model_manager, base_config, sample_state):
+        """Test async_generate_entities returns a string"""
+        agent = EntityAgent(mock_model_manager, base_config)
+        mock_model_manager.async_generate = AsyncMock(return_value='{"characters": {}}')
+
+        sample_state.current_chapter_index = 0
+        sample_state.validated_chapter_draft = ChapterContent(
+            title="第一章 测试章节",
+            content="测试章节内容"
+        )
+
+        result = asyncio.run(agent.async_generate_entities(sample_state))
+
+        assert isinstance(result, str)
+        mock_model_manager.async_generate.assert_called_once()

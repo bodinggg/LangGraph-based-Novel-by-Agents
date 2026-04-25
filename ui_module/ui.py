@@ -913,9 +913,10 @@ class NovelGeneratorUI:
             else:
                 # 如果没有大纲，使用默认标题
                 storage = NovelStorage("untitled_novel")
-            
+
             # 保存章节内容到storage目录
-            storage.save_chapter(self.all_chapters)
+            for idx, chapter in enumerate(self.all_chapters):
+                storage.save_chapter(idx + 1, chapter)
             
             # 格式化更新后的章节内容用于前端显示
             updated_chapter_display = self._format_chapter(self.all_chapters[index], index)
@@ -968,7 +969,7 @@ class NovelGeneratorUI:
             # 如果解析失败，返回原始章节
             return self.all_chapters[index]
     
-    def _generate_novel_interactive(self, user_intent, model_type, api_key, base_url, api_type, model_name, model_path, min_chapters, volume, master_outline,
+    def _generate_novel_interactive(self, user_intent, model_type, api_key, base_url, api_type, model_name, model_path, min_chapters, volume, master_outline, execution_mode,
                       status_box, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector, approve_btn, reject_btn):
         """交互式生成小说的主流程（分步执行，需要用户批准）"""
         if self.processing:
@@ -1016,14 +1017,14 @@ class NovelGeneratorUI:
             yield status, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector, gr.update(visible=False), gr.update(visible=False)
             
             agent_config = BaseConfig(min_chapters=min_chapters, volume=volume, master_outline=master_outline)
-            
-            self.workflow = create_workflow(model_config, agent_config)
+
+            self.workflow = create_workflow(model_config, agent_config, execution_mode=execution_mode)
             status = self.__update_status("✅ 工作流初始化完成，开始交互式生成...")
             yield status, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector, gr.update(visible=False), gr.update(visible=False)
             
             # 创建工作流迭代器
             self.workflow_iterator = self.workflow.stream(
-                {"user_intent": user_intent, "gradio_mode": True},  # 设置为True以启用交互模式
+                {"user_intent": user_intent, "gradio_mode": True, "execution_mode": execution_mode},  # 设置为True以启用交互模式
                 {"recursion_limit": 1000000}
             )
             
@@ -1100,7 +1101,7 @@ class NovelGeneratorUI:
             self.processing = False
             self.workflow_iterator = None
 
-    def _generate_novel(self, user_intent, model_type, api_key, base_url, api_type, model_name, model_path, min_chapters, volume, master_outline,
+    def _generate_novel(self, user_intent, model_type, api_key, base_url, api_type, model_name, model_path, min_chapters, volume, master_outline, execution_mode,
                       status_box, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector):
         """生成小说的主流程（生成器函数）- 保持原有的自动执行模式"""
         if self.processing:
@@ -1144,14 +1145,14 @@ class NovelGeneratorUI:
             yield status, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector
             
             agent_config = BaseConfig(min_chapters=min_chapters, volume=volume, master_outline=master_outline)
-            
-            self.workflow = create_workflow(model_config, agent_config)
+
+            self.workflow = create_workflow(model_config, agent_config, execution_mode=execution_mode)
             status = self.__update_status("✅ 工作流初始化完成，开始生成小说...")
             yield status, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector
-            
+
             final_state = None
             for step in self.workflow.stream(
-                {"user_intent": user_intent, "gradio_mode":True},
+                {"user_intent": user_intent, "gradio_mode":True, "execution_mode": execution_mode},
                 {"recursion_limit": 1000000}
             ):
                 for node, state_dict in step.items():
@@ -1167,15 +1168,28 @@ class NovelGeneratorUI:
                         self.validated_characters = state_dict['validated_characters']
                         characters_box = self._format_characters(self.validated_characters)
 
-                    if state_dict and state_dict.get('validated_chapter_draft'):
+                    # 处理批量章节（并行模式）
+                    batch_chapters = state_dict.get('batch_chapters', []) if state_dict else []
+                    logger.info(f"[UI] 收到 batch_chapters: {len(batch_chapters)} 章, all_chapters当前: {len(self.all_chapters)} 章")
+                    if batch_chapters:
+                        logger.info(f"[UI] 批次章节索引: {[ch.title for ch in batch_chapters]}")
+                        # 批量模式下，一次性添加所有章节
+                        for ch in batch_chapters:
+                            self.all_chapters.append(ch)
+                        chapter_selector = self._update_chapter_selection(self.all_chapters)
+                        # 显示最后一个章节
+                        if batch_chapters:
+                            chapter_box = self._format_chapter(batch_chapters[-1], len(self.all_chapters) - 1)
+                        logger.info(f"[UI] 批量加载 {len(batch_chapters)} 章后，当前共 {len(self.all_chapters)} 章")
+                    elif state_dict and state_dict.get('validated_chapter_draft'):
                         current_index = state_dict.get('current_chapter_index', 0)
                         chapter_box = self._format_chapter(
-                            state_dict['validated_chapter_draft'], 
+                            state_dict['validated_chapter_draft'],
                             current_index
                         )
                         if self.last_chapter_index == current_index:
                             self.all_chapters[-1] = state_dict['validated_chapter_draft']
-                        
+
                         elif len(self.all_chapters) <= current_index:
                             self.all_chapters.append(state_dict['validated_chapter_draft'])
                             chapter_selector = self._update_chapter_selection(self.all_chapters)
@@ -1192,6 +1206,13 @@ class NovelGeneratorUI:
                 yield status, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector
             else:
                 status = self.__update_status("🎉 小说生成完成！可以点击保存按钮保存内容")
+                # 并行模式完成后，加载所有章节到选择器
+                final_content = final_state.get('final_content', []) if final_state and hasattr(final_state, 'get') else []
+                if final_content and not self.all_chapters:
+                    self.all_chapters = final_content
+                    chapter_selector = self._update_chapter_selection(self.all_chapters)
+                    if self.all_chapters:
+                        chapter_box = self._format_chapter(self.all_chapters[0], 0)
                 yield status, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector
                 
         except Exception as e:
@@ -1546,8 +1567,14 @@ class NovelGeneratorUI:
                         value=True,
                         label="是否开启分卷解析大纲功能"
                     )
-                   
-                            
+
+                    execution_mode = gr.Radio(
+                        choices=["serial", "parallel"],
+                        value="serial",
+                        label="执行模式",
+                        info="serial: 串行撰写（稳定）| parallel: 并行撰写（需要多API Key）"
+                    )
+
                 # 右侧内容展示区（占3份宽度）
                 with gr.Column(scale=2):
                     with gr.Tabs(elem_classes="info-card"):
@@ -1678,7 +1705,7 @@ class NovelGeneratorUI:
             generate_btn.click(
                 fn=self._generate_novel,
                 inputs=[
-                    user_intent, model_type, api_key, base_url, api_type, model_name, model_path, min_chapters, volume, master_outline,
+                    user_intent, model_type, api_key, base_url, api_type, model_name, model_path, min_chapters, volume, master_outline, execution_mode,
                     status_box, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector
                 ],
                 outputs=[status_box, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector]
@@ -1688,7 +1715,7 @@ class NovelGeneratorUI:
             interactive_btn.click(
                 fn=self._generate_novel_interactive,
                 inputs=[
-                    user_intent, model_type, api_key, base_url, api_type, model_name, model_path, min_chapters, volume, master_outline,
+                    user_intent, model_type, api_key, base_url, api_type, model_name, model_path, min_chapters, volume, master_outline, execution_mode,
                     status_box, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector, approve_btn, reject_btn
                 ],
                 outputs=[status_box, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector, approval_buttons, approval_buttons]

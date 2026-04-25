@@ -24,13 +24,6 @@ class FeedbackManager(Generic[T]):
     def request_feedback(self, step: str, content: T, state: NovelState) -> Dict[str, Any]:
         """请求用户反馈"""
         feedback_id = f"{step}_{state.current_chapter_index if hasattr(state, 'current_chapter_index') else 0}"
-        # print("="*100)
-        # print(f"请求对用户的反馈")
-        # print("-"*100)
-        # print(f"feedback_id: {feedback_id}")
-        # print(f"step: {step}")
-        # print(f"content: {content}")
-        # print("="*100)
         self.pending_feedback[feedback_id] = {
             "step": step,
             "content": content,
@@ -50,13 +43,6 @@ class FeedbackManager(Generic[T]):
     
     def submit_feedback(self, feedback_id: str, action: str, modified_content: T = None) -> Dict[str, Any]:
         """提交用户反馈"""
-        # print("="*100)
-        # print(f"请求对用户的反馈")
-        # print("-"*100)
-        # print(f"feedback_id: {feedback_id}")
-        # print(f"action: {action}")
-
-        # print("="*100)
         if feedback_id not in self.pending_feedback:
             raise ValueError(f"未找到{self.feedback_type}反馈ID: {feedback_id}")
         
@@ -144,11 +130,6 @@ def create_feedback_node(
                     modified_content=None
                 )
 
-                # print("="*100)
-                # print(f"{feedback_type_name}反馈完成")
-                # print("-"*100)
-                # print(f"feedback_submit: {feedback_submit}")
-                # print("="*100)
                 return {
                     **base_result,
                     feedback_id_attr: feedback_submit["feedback_id"],

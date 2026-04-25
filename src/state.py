@@ -3,27 +3,30 @@
 """
 
 from typing import Optional, List
-from src.model import * 
+from src.model import *
 from src.storage import NovelStorage
 from pydantic import BaseModel, ConfigDict
 
 class NovelState(BaseModel):
     # 动态内存管理
     novel_storage: Optional[NovelStorage] = None
-    
+
     # 用户意图
     user_intent: str
 
     # 重要参数控制
     min_chapters: int=10
-    
+
+    # 执行模式: "serial"（串行）或 "parallel"（并行）
+    execution_mode: str = "serial"
+
     # 每个环节重试次数记录
     attempt: int=0
     evaluate_attempt: int=0 # 特殊在于评估有重试机制，写作-评估也有重试机制
-    
+
     # 每个环节最大重试次数
     max_attempts: int= 10
-    
+
     # 大纲生成控制
     raw_outline: Optional[str]=None
     validated_outline: Optional[NovelOutline]=None  # 分卷生成大纲需要用到，属于动态更新，先不拆成本地
@@ -48,7 +51,12 @@ class NovelState(BaseModel):
     current_chapter_index: int=0
     raw_current_chapter: Optional[str] =None
     validated_chapter_draft: Optional[ChapterContent] = None
-    current_chapter_validated_error: Optional[str] = None	
+    current_chapter_validated_error: Optional[str] = None
+
+    # 批量写作结果（用于并行模式）
+    batch_results: Optional[List[dict]] = None
+    batch_size: int = 3
+    batch_chapters: Optional[List[ChapterContent]] = None  # 本批次验证通过的章节对象列表，供UI显示	
     
     
     # 评估内容反馈

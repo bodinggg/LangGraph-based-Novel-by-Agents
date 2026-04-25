@@ -25,7 +25,8 @@ from src.feedback_nodes import (
 
 from src.state import NovelState
 from src.log_config import loggers
-from src.model_manager import LocalModelManager, APIModelManager
+from src.model_manager import LocalModelManager
+from src.multi_key_model_manager import MultiKeyAPIModelManager
 from src.config_loader import (
     OutlineConfig,
     CharacterConfig,
@@ -39,7 +40,7 @@ from src.config_loader import (
 logger = loggers['workflow']
 
 # 构建工作流
-def create_workflow(model_config: ModelConfig, Agent_config: BaseConfig= None) -> StateGraph:
+def create_workflow(model_config: ModelConfig, Agent_config: BaseConfig= None, execution_mode: str = "serial") -> StateGraph:
     """创建包含章节写作和质量评审的完整工作流"""
     # 获取共享模型实例和分词器
     model_type = model_config.model_type
@@ -47,14 +48,47 @@ def create_workflow(model_config: ModelConfig, Agent_config: BaseConfig= None) -
     if model_type == "local":
         model_manager = LocalModelManager(model_config.model_path)
     elif model_type == "api":
-        model_manager = APIModelManager(
-            model_config.api_url,
-            model_config.api_key,
-            model_name=model_config.model_name,
-            max_retries=model_config.max_retries,
-            retry_delay=model_config.retry_delay,
-            api_type=model_config.api_type
-        )
+        # 根据配置选择不同的并行策略
+        if execution_mode == "parallel" and model_config.api_key:
+            # 策略1: 单 Key 多客户端并行（推荐）
+            # 使用同一个 API Key 创建多个客户端实例，实现真正并行
+            from src.model_manager import ClientPoolModelManager
+            model_manager = ClientPoolModelManager(
+                api_url=model_config.api_url,
+                api_key=model_config.api_key,
+                model_name=model_config.model_name,
+                max_retries=model_config.max_retries,
+                retry_delay=model_config.retry_delay,
+                api_type=model_config.api_type,
+                num_clients=model_config.num_clients,
+                max_concurrent_per_client=model_config.max_concurrent_per_client
+            )
+            logger.info(f"成功加载单Key多客户端并行管理器: {model_config.num_clients} 个客户端")
+        elif model_config.api_keys:
+            # 策略2: 多 Key 轮询
+            model_manager = MultiKeyAPIModelManager(
+                api_url=model_config.api_url,
+                api_keys=model_config.api_keys,
+                model_name=model_config.model_name,
+                max_retries=model_config.max_retries,
+                retry_delay=model_config.retry_delay,
+                api_type=model_config.api_type,
+                max_concurrent_per_key=model_config.max_concurrent_per_key
+            )
+            logger.info(f"成功加载多Key模型管理器，共 {len(model_config.api_keys)} 个 Key")
+        else:
+            # 策略3: 单 Key 单客户端（向后兼容）
+            from src.model_manager import APIModelManager
+            model_manager = APIModelManager(
+                api_url=model_config.api_url,
+                api_key=model_config.api_key,
+                model_name=model_config.model_name,
+                max_retries=model_config.max_retries,
+                retry_delay=model_config.retry_delay,
+                api_type=model_config.api_type,
+                max_concurrent=model_config.max_concurrent_per_key
+            )
+            logger.info("成功加载单Key模型管理器")
     logger.info(f"成功加载{model_type}模型管理器")
 
     # Use agent_config for outline settings, fallback to defaults
@@ -224,12 +258,40 @@ def create_workflow(model_config: ModelConfig, Agent_config: BaseConfig= None) -
         "process_character_feedback",
         check_character_feedback_node,
         {
-            "success": "write_chapter",
+            "success": "route_to_writing",
             "retry": "generate_characters",
             "failure": "failure"
         }
     )
-    
+
+    # -------------------- 执行模式路由 --------------------
+    workflow.add_node("route_to_writing", route_to_writing_node)
+    workflow.add_conditional_edges(
+        "route_to_writing",
+        check_execution_mode_node,
+        {
+            "serial": "write_chapter",
+            "parallel": "batch_write_chapters"
+        }
+    )
+
+    # -------------------- 批量并行写作节点 --------------------
+    workflow.add_node("batch_write_chapters",
+                      lambda state: batch_write_chapters_node(state, writer_agent))
+    workflow.add_node("batch_validate_chapters", batch_validate_chapters_node)
+    workflow.add_edge("batch_write_chapters", "batch_validate_chapters")
+
+    # 批量验证后的路由
+    workflow.add_conditional_edges(
+        "batch_validate_chapters",
+        check_batch_completion_node,
+        {
+            "continue_serial": "chapter_feedback",
+            "continue_parallel": "route_to_writing",
+            "complete": "success"
+        }
+    )
+
     # 写作
     workflow.add_edge("write_chapter", "validate_chapter")
     workflow.add_conditional_edges(
@@ -290,13 +352,14 @@ def create_workflow(model_config: ModelConfig, Agent_config: BaseConfig= None) -
             "failure": "failure"
         }
     )
-    
+
+    # 验收流程
     workflow.add_conditional_edges(
         "accpet_chapter",
         check_chapter_completion_node,
         {
-            "complete":"success",
-            "continue":"write_chapter"
+            "complete": "success",
+            "continue": "write_chapter"  # 继续写下一章
         }
     )
     

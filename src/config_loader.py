@@ -9,10 +9,14 @@ class ModelConfig(BaseModel):
     model_path: Optional[str] = None
     model_name: Optional[str] = None
     api_url: Optional[str] = None
-    api_key: Optional[str] = None
+    api_key: Optional[str] = None  # 单个 Key（向后兼容）
+    api_keys: list = []  # 多个 Key（用于并行）
     api_type: str = "openai"  # API 类型，"openai" 或 "anthropic"
     max_retries: int=3  # 重试次数，可选
     retry_delay: int=1  # 等待延迟，可选
+    max_concurrent_per_key: int=3  # 每个 Key 的最大并发数
+    num_clients: int=4  # 客户端池大小（单 Key 多客户端模式）
+    max_concurrent_per_client: int=1  # 每个客户端的最大并发数（1=串行，>1=允许并发）
 
 
 class BaseConfig(BaseModel):

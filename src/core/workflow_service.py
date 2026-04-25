@@ -7,7 +7,8 @@ import uuid
 import json
 import threading
 import time
-from typing import Optional, Callable, Iterator, Any
+import asyncio
+from typing import Optional, Callable, Iterator, Any, AsyncIterator
 from datetime import datetime
 
 from src.workflow import create_workflow
@@ -34,7 +35,8 @@ class WorkflowService:
         agent_config: Optional[BaseConfig] = None,
         min_chapters: int = 10,
         volume: int = 1,
-        master_outline: bool = True
+        master_outline: bool = True,
+        execution_mode: str = "serial"
     ) -> str:
         """创建新的小说生成任务
 
@@ -45,6 +47,7 @@ class WorkflowService:
             min_chapters: 最少章节数
             volume: 分卷数
             master_outline: 是否启用分卷模式
+            execution_mode: 执行模式，"serial"（串行）或 "parallel"（并行）
 
         Returns:
             workflow_id: 新工作流的唯一标识
@@ -73,6 +76,7 @@ class WorkflowService:
         # 保存配置
         config_data = model_config.model_dump()
         config_data["agent_config"] = agent_config.model_dump() if agent_config else None
+        config_data["execution_mode"] = execution_mode
         state = self.state_manager.load_state(workflow_id) or {}
         state["config"] = config_data
         self.state_manager.save_state(workflow_id, state)
@@ -94,7 +98,7 @@ class WorkflowService:
         agent_config: Optional[BaseConfig] = None,
         min_chapters: int = 10,
         volume: int = 1,
-        master_outline: bool = True
+        master_outline: bool = True,
     ) -> tuple[str, dict]:
         """从存储目录恢复小说创作
 
@@ -178,6 +182,267 @@ class WorkflowService:
 
         return workflow_id, initial_state
 
+    async def async_execute(
+        self,
+        workflow_id: str,
+        progress_callback: Optional[Callable[[ProgressEvent], None]] = None,
+        resume: bool = False
+    ) -> AsyncIterator[tuple[str, dict]]:
+        """异步执行工作流（用于并行模式）
+
+        Args:
+            workflow_id: 工作流ID
+            progress_callback: 进度回调函数
+            resume: 是否从检查点恢复
+
+        Yields:
+            (node_name, state_dict): 每个节点的名称和状态
+        """
+        # 加载配置
+        state = self.state_manager.load_state(workflow_id)
+        if state is None:
+            raise ValueError(f"Workflow {workflow_id} not found")
+
+        config_data = state.get("config", {})
+        model_config = ModelConfig(**{
+            k: v for k, v in config_data.items()
+            if k not in ["agent_config"]
+        })
+        agent_config_data = config_data.get("agent_config")
+        agent_config = BaseConfig(**agent_config_data) if agent_config_data else None
+
+        # 创建工作流（从检查点恢复时）
+        workflow = create_workflow(model_config, agent_config, execution_mode=state.get("execution_mode", "serial"))
+
+        # 订阅进度
+        if progress_callback:
+            self._progress_emitter.subscribe(progress_callback)
+
+        # 设置工作流元数据
+        state["workflow_id"] = workflow_id
+
+        # 检查是否有检查点可恢复
+        initial_state = None
+        if resume and self.state_manager.has_checkpoint(workflow_id):
+            checkpoint = self.state_manager.load_checkpoint(workflow_id)
+            if checkpoint:
+                from src.storage import NovelStorage
+                from src.model import NovelOutline, Character
+
+                storage = NovelStorage(checkpoint.get("novel_title", ""))
+
+                validated_chapters = []
+                for c in checkpoint.get("validated_chapters", []):
+                    try:
+                        validated_chapters.append(ChapterOutline(**c))
+                    except Exception:
+                        pass
+
+                validated_characters = []
+                for c in checkpoint.get("validated_characters", []):
+                    try:
+                        validated_characters.append(Character(**c))
+                    except Exception:
+                        pass
+
+                initial_state = {
+                    "user_intent": checkpoint.get("user_intent", state["user_intent"]),
+                    "min_chapters": checkpoint.get("min_chapters", state.get("min_chapters", 10)),
+                    "gradio_mode": state.get("gradio_mode", False),
+                    "current_chapter_index": checkpoint.get("current_chapter_index", 0),
+                    "completed_chapters": checkpoint.get("completed_chapters", []),
+                    "raw_outline": checkpoint.get("raw_outline"),
+                    "raw_master_outline": checkpoint.get("raw_master_outline"),
+                    "validated_chapters": validated_chapters,
+                    "row_characters": checkpoint.get("row_characters"),
+                    "validated_characters": validated_characters,
+                    "novel_storage": storage,
+                    "current_node": checkpoint.get("current_node", ""),
+                }
+
+                outline_data = storage.load_outline()
+                if outline_data:
+                    initial_state["validated_outline"] = outline_data
+
+                emit_progress(
+                    workflow_id=workflow_id,
+                    node="resume",
+                    status=WorkflowStatus.RUNNING,
+                    message=f"从第{checkpoint.get('current_chapter_index', 0) + 1}章恢复创作...",
+                    progress=0.15
+                )
+
+        if initial_state is None:
+            initial_state = {
+                "user_intent": state["user_intent"],
+                "min_chapters": state.get("min_chapters", 10),
+                "gradio_mode": state.get("gradio_mode", False),
+                "execution_mode": state.get("execution_mode", "serial"),
+            }
+
+        cancelled = False
+        try:
+            self.state_manager.update_status(
+                workflow_id,
+                WorkflowStatus.RUNNING,
+                current_node="generate_outline",
+                progress=0.05
+            )
+
+            emit_progress(
+                workflow_id=workflow_id,
+                node="generate_outline",
+                status=WorkflowStatus.RUNNING,
+                message="开始生成小说大纲...",
+                progress=0.05
+            )
+
+            # 异步迭代工作流
+            async for step in workflow.astream(
+                initial_state,
+                {"recursion_limit": agent_config.min_chapters * 50 if agent_config else 500}
+            ):
+                with self._lock:
+                    if self._workers.get(workflow_id, {}).get("cancelled"):
+                        cancelled = True
+                        break
+
+                for node_name, node_state in step.items():
+                    node_state["workflow_id"] = workflow_id
+                    node_state["status"] = WorkflowStatus.RUNNING.value
+                    self.state_manager.save_state(workflow_id, node_state)
+
+                    node_state["current_node"] = node_name
+                    node_state["novel_title"] = node_state.get("novel_storage", state.get("novel_title", "")).base_dir.name.replace("_storage", "") if hasattr(node_state.get("novel_storage"), "base_dir") else ""
+                    self.state_manager.save_checkpoint(workflow_id, node_state)
+
+                    progress = self._calculate_progress(node_name, node_state, agent_config)
+                    self.state_manager.update_status(
+                        workflow_id,
+                        WorkflowStatus.RUNNING,
+                        current_node=node_name,
+                        progress=progress
+                    )
+
+                    emit_progress(
+                        workflow_id=workflow_id,
+                        node=node_name,
+                        status=WorkflowStatus.RUNNING,
+                        message=self._get_node_message(node_name, node_state),
+                        chapter_index=node_state.get("current_chapter_index"),
+                        progress=progress
+                    )
+
+                    yield node_name, node_state
+
+            if cancelled:
+                self.state_manager.update_status(
+                    workflow_id,
+                    WorkflowStatus.CANCELLED,
+                    error="用户取消"
+                )
+                emit_progress(
+                    workflow_id=workflow_id,
+                    node="",
+                    status=WorkflowStatus.CANCELLED,
+                    message="工作流已被用户取消（已保存检查点，可恢复）"
+                )
+            else:
+                self.state_manager.clear_checkpoint(workflow_id)
+                final_state = self.state_manager.load_state(workflow_id)
+                self.state_manager.update_status(
+                    workflow_id,
+                    WorkflowStatus.COMPLETED,
+                    current_node="success",
+                    progress=1.0
+                )
+                emit_progress(
+                    workflow_id=workflow_id,
+                    node="success",
+                    status=WorkflowStatus.COMPLETED,
+                    message="小说生成完成！",
+                    progress=1.0
+                )
+
+        except Exception as e:
+            error_msg = str(e)
+            self.state_manager.update_status(
+                workflow_id,
+                WorkflowStatus.FAILED,
+                error=error_msg
+            )
+            emit_progress(
+                workflow_id=workflow_id,
+                node="error",
+                status=WorkflowStatus.FAILED,
+                message=f"生成失败: {error_msg}"
+            )
+            raise
+
+        finally:
+            if progress_callback:
+                self._progress_emitter.unsubscribe(progress_callback)
+
+    def _calculate_progress(self, node_name: str, state: dict, agent_config: Optional[BaseConfig]) -> float:
+        """计算工作流进度"""
+        total_chapters = agent_config.min_chapters if agent_config else 10
+
+        # 阶段一：大纲生成 ~10%
+        if node_name == "generate_outline":
+            return 0.05
+        elif node_name in ["validate_master_outline", "validate_outline"]:
+            return 0.08
+        elif node_name in ["outline_feedback", "process_outline_feedback"]:
+            return 0.10
+
+        # 阶段二：角色生成 ~15%
+        elif node_name == "generate_characters":
+            return 0.12
+        elif node_name == "validate_characters":
+            return 0.14
+        elif node_name in ["character_feedback", "process_character_feedback"]:
+            return 0.15
+
+        # 阶段三：章节循环 ~75%
+        elif node_name == "write_chapter":
+            current = state.get("current_chapter_index", 0)
+            base = 0.15
+            chapter_weight = 0.70 / total_chapters
+            return min(base + current * chapter_weight, 0.85)
+        elif node_name == "validate_chapter":
+            current = state.get("current_chapter_index", 0)
+            base = 0.15
+            chapter_weight = 0.70 / total_chapters
+            return min(base + current * chapter_weight + chapter_weight * 0.1, 0.85)
+        elif node_name == "chapter_feedback":
+            current = state.get("current_chapter_index", 0)
+            base = 0.15
+            chapter_weight = 0.70 / total_chapters
+            return min(base + current * chapter_weight + chapter_weight * 0.2, 0.85)
+        elif node_name == "evaluate_chapter":
+            current = state.get("current_chapter_index", 0)
+            base = 0.15
+            chapter_weight = 0.70 / total_chapters
+            return min(base + current * chapter_weight + chapter_weight * 0.4, 0.85)
+        elif node_name == "evaluate2wirte":
+            current = state.get("current_chapter_index", 0)
+            base = 0.15
+            chapter_weight = 0.70 / total_chapters
+            return min(base + current * chapter_weight + chapter_weight * 0.5, 0.85)
+        elif node_name == "generate_entities":
+            current = state.get("current_chapter_index", 0)
+            base = 0.15
+            chapter_weight = 0.70 / total_chapters
+            return min(base + current * chapter_weight + chapter_weight * 0.6, 0.85)
+        elif node_name in ["accpet_chapter", "evaluate_report"]:
+            return 0.90
+
+        # 完成
+        elif node_name in ["success", "failure"]:
+            return 1.0 if node_name == "success" else 0.0
+
+        return 0.5
+
     def get_status(self, workflow_id: str) -> Optional[dict]:
         """获取工作流状态
 
@@ -255,8 +520,8 @@ class WorkflowService:
         agent_config_data = config_data.get("agent_config")
         agent_config = BaseConfig(**agent_config_data) if agent_config_data else None
 
-        # 创建工作流
-        workflow = create_workflow(model_config, agent_config)
+        # 创建工作流（execute_streaming恢复时）
+        workflow = create_workflow(model_config, agent_config, execution_mode=state.get("execution_mode", "serial"))
 
         # 订阅进度
         if progress_callback:
@@ -326,6 +591,7 @@ class WorkflowService:
                 "user_intent": state["user_intent"],
                 "min_chapters": state.get("min_chapters", 10),
                 "gradio_mode": state.get("gradio_mode", False),
+                "execution_mode": state.get("execution_mode", "serial"),
             }
 
         cancelled = False

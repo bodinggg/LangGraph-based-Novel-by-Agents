@@ -1,11 +1,51 @@
 import json
+import logging
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from src.model import NovelOutline, Character, ChapterContent, EntityContent
 
+logger = logging.getLogger(__name__)
+
+
+def sanitize_novel_title(novel_title: str) -> str:
+    """Sanitize novel title to prevent path traversal attacks.
+
+    Args:
+        novel_title: The novel title to sanitize.
+
+    Returns:
+        Sanitized title.
+
+    Raises:
+        ValueError: If title contains path traversal attempts or invalid characters.
+    """
+    if not novel_title:
+        raise ValueError("Novel title cannot be empty")
+
+    # Strip whitespace
+    title = novel_title.strip()
+
+    # Check if empty after stripping
+    if not title:
+        raise ValueError("Novel title cannot be empty")
+
+    # Check for path traversal attempts
+    dangerous_patterns = ["..", "/", "\\", "\0"]
+    for pattern in dangerous_patterns:
+        if pattern in title:
+            raise ValueError(f"Invalid novel title: contains forbidden pattern '{pattern}'")
+
+    # Optionally, limit length to prevent other issues
+    if len(title) > 200:
+        raise ValueError("Novel title too long (max 200 characters)")
+
+    return title
+
+
 class NovelStorage:
     def __init__(self, novel_title: str):
-        self.base_dir = Path(f"result/{novel_title}_storage")
+        sanitized_title = sanitize_novel_title(novel_title)
+        self.base_dir = Path("result").resolve() / f"{sanitized_title}_storage"
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self.chapter_dir = self.base_dir / "chapters"
         self.chapter_dir_json = self.base_dir / "chapters_json"

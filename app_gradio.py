@@ -7,6 +7,7 @@ FastAPI + Gradio 统一入口
 - /api/v1/* -> REST API
 """
 import os
+import logging
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 
@@ -19,11 +20,13 @@ from gradio import mount_gradio_app
 
 from ui_module.ui import NovelGeneratorUI
 
+logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
-    print("✅ Novel Generator 服务已启动")
+    logger.info("Novel Generator 服务已启动")
     yield
 
 
@@ -40,7 +43,7 @@ def create_app() -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
-        allow_credentials=True,
+        allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -78,9 +81,7 @@ def main():
     host = os.getenv("API_HOST", "127.0.0.1")
     port = int(os.getenv("API_PORT", "7999"))
 
-    print(f"🚀 启动服务")
-    print(f"   UI: http://{host}:{port}/ui")
-    print(f"   API: http://{host}:{port}/docs")
+    logger.info(f"启动服务: UI=http://{host}:{port}/ui, API=http://{host}:{port}/docs")
 
     uvicorn.run(
         "app_gradio:app",
