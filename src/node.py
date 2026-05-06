@@ -1,6 +1,6 @@
 import json
 import asyncio
-from typing import Literal
+from typing import Literal, Dict, Any
 
 from src.model import (
     Character,
@@ -23,7 +23,7 @@ from src.state import NovelState
 from src.log_config import loggers
 from src.config_loader import OutlineConfig
 from src.storage import NovelStorage
-from src.client_pool import get_current_client_id
+
 
 logger = loggers['node']
         
@@ -496,13 +496,39 @@ def check_characters_node(state:NovelState) -> Literal["success", "retry", "fail
 # -------------------- 章节写作 -------------------- [生成 -> 验证 -> 状态判断]
 def write_chapter_node(state: NovelState, writer_agent: WriterAgent) -> NovelState:
     """撰写单章内容的节点"""
-    
+
     # 获取当前状态中的必要信息
     revision_feedback = state.validated_evaluation
     current_index = state.current_chapter_index
-    
+
+    # 尝试从 supervisor 获取修订上下文
+    revision_context = None
+    if getattr(state, 'revision_needed', False):
+        from src.supervisor_node import get_supervisor_writer
+        sw = get_supervisor_writer()
+        if sw:
+            revision_context = sw.get_revision_context(current_index)
+
+    # 如果 revision_context 为空但有 revision_notes（来自 Council），使用它
+    # 这确保协商的修订意见能传递给 WriterAgent
+    if not revision_context and getattr(state, 'revision_notes', None):
+        logger.info(f"📖 [WriteChapter] 使用 Council 的 revision_notes 进行修订")
+        revision_context = {
+            "chapter_index": current_index,
+            "revision_requests": [{
+                "id": f"council_{current_index}",
+                "chapter_index": current_index,
+                "revision_type": "council",
+                "priority": getattr(state, 'revision_priority', 'high'),
+                "description": state.revision_notes,
+                "suggestions": [state.revision_notes],
+                "created_at": None,
+            }],
+            "count": 1,
+        }
+
     outline = state.novel_storage.load_outline()
-      
+
     # 获取当前章节大纲
     chapter_outline = outline.chapters[current_index]
     if revision_feedback:
@@ -527,10 +553,12 @@ def write_chapter_node(state: NovelState, writer_agent: WriterAgent) -> NovelSta
             "attempt": state.attempt + 1,
             "evaluate_attempt": state.evaluate_attempt + 1
         }
+
     return {
         "raw_current_chapter": raw_chapter,
         "attempt": state.attempt + 1,
-        "evaluate_attempt": state.evaluate_attempt + 1
+        "evaluate_attempt": state.evaluate_attempt + 1,
+        "revision_context": revision_context  # 传递给 WriterAgent
     }
 
 
@@ -539,6 +567,14 @@ async def async_write_chapter_node(state: NovelState, writer_agent: WriterAgent)
 
     revision_feedback = state.validated_evaluation
     current_index = state.current_chapter_index
+
+    # 尝试从 supervisor 获取修订上下文
+    revision_context = None
+    if getattr(state, 'revision_needed', False):
+        from src.supervisor_node import get_supervisor_writer
+        sw = get_supervisor_writer()
+        if sw:
+            revision_context = sw.get_revision_context(current_index)
 
     outline = state.novel_storage.load_outline()
 
@@ -549,7 +585,8 @@ async def async_write_chapter_node(state: NovelState, writer_agent: WriterAgent)
         logger.info(f"[ASYNC] 正在撰写第{current_index + 1}章: {chapter_outline.title}(第{state.attempt+1}次重写)")
 
     # 调用异步写作代理生成章节内容
-    raw_chapter = await writer_agent.async_write_chapter(state)
+    raw_chapter, client_id = await writer_agent.async_write_chapter(state)
+    logger.info(f"[ASYNC WRITE] 章节 {current_index + 1} ({chapter_outline.title}) 使用 {client_id or 'direct'}")
 
     # 提取并解析JSON
     extracted_json = extract_json(raw_chapter)
@@ -564,10 +601,12 @@ async def async_write_chapter_node(state: NovelState, writer_agent: WriterAgent)
             "attempt": state.attempt + 1,
             "evaluate_attempt": state.evaluate_attempt + 1
         }
+
     return {
         "raw_current_chapter": raw_chapter,
         "attempt": state.attempt + 1,
-        "evaluate_attempt": state.evaluate_attempt + 1
+        "evaluate_attempt": state.evaluate_attempt + 1,
+        "revision_context": revision_context
     }
 
 
@@ -608,10 +647,9 @@ def batch_write_chapters_node(state: NovelState, writer_agent: WriterAgent) -> N
             temp_state.validated_chapter_draft = None
             temp_state.evaluate_attempt = 0
             temp_state.current_chapter_validated_error = None
-            result = await writer_agent.async_write_chapter(temp_state)
-            # 记录该章节使用的客户端 ID
-            client_id = get_current_client_id()
-            logger.info(f"[BATCH WRITE] 章节 {idx + 1} ({ch_outline.title}) 使用 {client_id}")
+            result, client_id = await writer_agent.async_write_chapter(temp_state)
+            # client_id 在 async_write_chapter 内部从 contextvar 捕获，此时 contextvar 还未被 reset
+            logger.info(f"[BATCH WRITE] 章节 {idx + 1} ({ch_outline.title}) 使用 {client_id or 'direct'}")
             return result
         except Exception as e:
             logger.error(f"[BATCH] 第{idx + 1}章撰写失败: {e}")
@@ -628,7 +666,7 @@ def batch_write_chapters_node(state: NovelState, writer_agent: WriterAgent) -> N
     # 处理结果
     batch_results = []
     for i, result in enumerate(results):
-        # 处理异常情况
+        # 处理异常情况（asyncio.gather 返回的未捕获异常）
         if isinstance(result, Exception):
             logger.error(f"[BATCH] 第{start_idx + i + 1}章生成异常: {result}")
             batch_results.append({
@@ -639,7 +677,11 @@ def batch_write_chapters_node(state: NovelState, writer_agent: WriterAgent) -> N
             })
             continue
 
-        raw_chapter = result
+        # async_write_chapter 成功时返回 (content, client_id) 元组
+        if isinstance(result, tuple):
+            raw_chapter = result[0]
+        else:
+            raw_chapter = result
         if isinstance(raw_chapter, Exception):
             raw_chapter = str(raw_chapter)
 
@@ -837,17 +879,28 @@ def evaluation_to_chapter_node(state:NovelState) -> NovelState:
     }
 
 # 检查评估章节节点
-def check_evaluation_chapter_node(state: NovelState) -> Literal["accept", "revise", "force_accpet"]:
-    """检查章节评估结果, 决定是接受、修改还是强制接受"""
+def check_evaluation_chapter_node(state: NovelState) -> Literal["accept", "revise", "force_accpet", "fast_accept"]:
+    """检查章节评估结果, 决定是接受、修改还是强制接受
+
+    根据 evaluation_mode 决定路由:
+    - fast 模式: accept/fast_accept → accpet_chapter (跳过 supervisor + entities)
+    - deep 模式: accept → supervisor_node, revise → write_chapter, force_accpet → accpet_chapter
+    """
+    evaluation_mode = getattr(state, 'evaluation_mode', 'deep')
     evaluation = state.validated_evaluation
+
     if evaluation.passes:
         logger.info(f"当前第{state.current_chapter_index+1}章<{state.validated_chapter_draft.title}>通过")
-        return "accept"  
+        if evaluation_mode == "fast":
+            return "fast_accept"  # 快速模式：直接接受，跳过 supervisor + entities
+        return "accept"  # 深度模式：进入 supervisor 检查
     elif state.evaluate_attempt < state.max_attempts:
         logger.info(f"当前第{state.current_chapter_index+1}章<{state.validated_chapter_draft.title}>, 接受修改意见, 重写本章")
         return "revise"
     else:
         logger.info(f"达到验证的最大次数, 强制接受本章")
+        if evaluation_mode == "fast":
+            return "fast_accept"  # 快速模式：强制接受也跳过 supervisor + entities
         return "force_accpet"
 
 # ---------------------- 实体识别 ---------------------- [生成 -> 验证 -> 状态判断]
@@ -1014,9 +1067,35 @@ def accept_chapter_node(state: NovelState) -> NovelState:
     current_draft = state.validated_chapter_draft
     current_index = state.current_chapter_index
 
-
+    # 保存章节内容
     state.novel_storage.save_chapter(chapter_index=current_index+1, chapter= current_draft)
     logger.info(f"章节{current_index+1}已接受, 已添加到本地")
+
+    # 保存章节修订版（用于观察修订效果）
+    # revision 会修改 raw_current_chapter，所以只要执行过修订就应该保存
+    try:
+        outline = state.novel_storage.load_outline()
+        if outline and current_index < len(outline.chapters):
+            chapter_title = outline.chapters[current_index].title
+            state.novel_storage.save_chapter_revised(current_index + 1, chapter_title, state.raw_current_chapter)
+            logger.info(f"章节{current_index+1}修订版已保存")
+    except Exception as e:
+        logger.warning(f"章节{current_index+1}修订版保存失败: {e}")
+
+    # 保存 StoryBible（包含 entities, character_arcs, plot_threads, world_states）
+    # 从 supervisor_node 的全局 StoryBible 获取最新数据并保存
+    try:
+        from src.supervisor_node import get_storybible
+        storybible = get_storybible()
+        if storybible is not None:
+            story_bible_content = storybible.to_content()
+            state.novel_storage.save_story_bible(story_bible_content)
+            logger.info(f"章节{current_index+1} StoryBible已保存 (entities:{len(story_bible_content.entities)}, arcs:{len(story_bible_content.character_arcs)}, threads:{len(story_bible_content.plot_threads)})")
+        else:
+            logger.warning(f"章节{current_index+1} StoryBible保存失败: storybible is None")
+    except Exception as e:
+        logger.warning(f"章节{current_index+1} StoryBible保存失败: {e}")
+
     # 重置章节相关状态, 准备处理下一章节
     return {
         "novel_storage": state.novel_storage,
@@ -1156,3 +1235,159 @@ def check_batch_completion_node(state: NovelState) -> Literal["continue_serial",
     else:
         logger.info("[BATCH CHECK] 串行模式，回到串行评估流程")
         return "continue_serial"
+
+
+# -------------------- Supervisor Recheck Node (Phase 3: 闭环检查) --------------------
+
+def supervisor_recheck_node(state: NovelState) -> Dict[str, Any]:
+    """Supervisor 复检节点 - 在修订后重新检查章节
+
+    修订后的章节需要经过快速复检，确认问题是否已解决。
+    与 supervisor_node 的区别：
+    1. 不重新运行全部 specialists，只做增量检查
+    2. 检查 revision_context 中的待处理项是否已解决
+    3. 增加 supervisor_recheck_count 计数
+    """
+    from src.supervisor_node import get_writing_supervisor
+
+    current_index = state.current_chapter_index
+    chapter_content = state.raw_current_chapter
+
+    if not chapter_content:
+        logger.info(f"📖 [SupervisorRecheck] 章节 {current_index} 无内容，跳过")
+        return {
+            "revision_needed": False,
+            "revision_priority": "none",
+            "supervisor_recheck_count": state.supervisor_recheck_count + 1,
+        }
+
+    writing_supervisor = get_writing_supervisor()
+    if writing_supervisor is None:
+        logger.warning("📖 [SupervisorRecheck] WritingSupervisor 未初始化，跳过")
+        return {
+            "revision_needed": False,
+            "revision_priority": "none",
+            "supervisor_recheck_count": state.supervisor_recheck_count + 1,
+        }
+
+    logger.info(f"📖 [SupervisorRecheck] 开始复检 (章节 {current_index})")
+
+    # 加载 StoryBible（如果尚未加载）
+    if state.novel_storage and not writing_supervisor.storybible._character_arcs:
+        try:
+            story_bible_content = state.novel_storage.load_story_bible()
+            if story_bible_content:
+                writing_supervisor.load_story_bible(story_bible_content)
+                logger.info(f"📖 [SupervisorRecheck] StoryBible 已加载")
+        except Exception as e:
+            logger.warning(f"📖 [SupervisorRecheck] StoryBible 加载失败: {e}")
+
+    # 运行增量检查
+    try:
+        import concurrent.futures
+
+        def run_in_new_loop():
+            return asyncio.run(writing_supervisor.review(chapter_content, current_index))
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(run_in_new_loop)
+            review_result = future.result()
+    except Exception as e:
+        logger.error(f"🔴 [SupervisorRecheck] 复检失败: {e}")
+        return {
+            "revision_needed": False,
+            "revision_priority": "none",
+            "supervisor_recheck_count": state.supervisor_recheck_count + 1,
+        }
+
+    needs_revision = review_result.needs_revision
+    priority = "high" if (review_result.suggestions and
+                          any(s.priority.value == "high" for s in review_result.suggestions)) else "medium"
+
+    if review_result.suggestions:
+        notes_parts = []
+        for i, sug in enumerate(review_result.suggestions[:3], 1):
+            notes_parts.append(f"{i}. [{sug.category.value}] {sug.issue}: {sug.suggested_change}")
+        revision_notes = "; ".join(notes_parts)
+    else:
+        revision_notes = review_result.reasoning or "无需修订"
+
+    logger.info(
+        f"📖 [SupervisorRecheck] 第 {current_index} 章复检完成: "
+        f"需要修订={needs_revision}, 建议数={len(review_result.suggestions)}"
+    )
+
+    return {
+        "supervisor_result": review_result.to_dict(),
+        "validated_evaluation": QualityEvaluation.from_review_result(review_result),
+        "revision_needed": needs_revision,
+        "revision_priority": priority,
+        "revision_notes": revision_notes,
+        "supervisor_recheck_count": state.supervisor_recheck_count + 1,
+    }
+
+
+async def _run_incremental_specialists(supervisor: Any, chapter_index: int, chapter_content: str) -> Any:
+    """运行增量 specialists 检查（只检查高优先级项）"""
+    # 只运行 ConsistencyAgent（最重要的一致性检查）
+    tasks = [
+        ("ConsistencyAgent", supervisor.consistency_agent.process(chapter_index, chapter_content)),
+    ]
+
+    results = await asyncio.gather(*[t[1] for t in tasks], return_exceptions=True)
+
+    # 聚合结果
+    supervisor_result = supervisor.aggregate_feedback(chapter_index, [results[0]] if not isinstance(results[0], Exception) else [{"error": str(results[0])}])
+
+    return supervisor_result
+
+
+def check_revision_loop_node(state: NovelState) -> Literal["continue", "accept", "max_loops"]:
+    """检查修订循环是否继续
+
+    决策逻辑：
+    1. 如果 revision_needed 为 False → accept（问题已解决）
+    2. 如果 supervisor_recheck_count >= max_revision_loops → accept（达到最大循环次数）
+    3. 如果 revision_priority 为 high 但已达最大次数 → accept（高优先级问题仍未解决，强制接受）
+    4. 否则 → continue（继续修订循环）
+
+    Returns:
+        - continue: 继续修订循环
+        - accept: 接受章节
+        - max_loops: 达到最大循环次数，强制接受
+    """
+    from src.supervisor_node import get_writing_supervisor
+
+    current_index = state.current_chapter_index
+    recheck_count = state.supervisor_recheck_count
+    max_loops = state.max_revision_loops
+
+    revision_needed = getattr(state, 'revision_needed', False)
+    revision_priority = getattr(state, 'revision_priority', 'none')
+    revision_notes = getattr(state, 'revision_notes', None)
+
+    logger.info(f"🔄 [CheckRevisionLoop] 章节 {current_index} 第 {recheck_count + 1} 次复检 (最大 {max_loops})，revision_needed={revision_needed}，priority={revision_priority}")
+
+    # 情况1：问题已解决（但如果 revision_notes 存在，说明是 Council 的修订意见，需要继续）
+    if not revision_needed and not revision_notes:
+        logger.info(f"🔄 [CheckRevisionLoop] 章节 {current_index} 问题已解决，接受章节")
+        return "accept"
+
+    # 情况1b：有 revision_notes（来自 Council），即使 revision_needed=False 也继续修订
+    if not revision_needed and revision_notes:
+        logger.info(f"🔄 [CheckRevisionLoop] 章节 {current_index} 有协商修订意见，继续修订")
+        return "continue"
+
+    # 情况2：达到最大循环次数
+    if recheck_count >= max_loops:
+        logger.info(f"🔄 [CheckRevisionLoop] 章节 {current_index} 达到最大修订循环次数 ({max_loops})，强制接受")
+        return "max_loops"
+
+    # 情况3：高优先级问题但已达最大次数
+    if revision_priority == "high" and recheck_count >= max_loops - 1:
+        logger.info(f"🔄 [CheckRevisionLoop] 章节 {current_index} 高优先级问题未解决但接近最大循环次数，强制接受")
+        return "max_loops"
+
+    # 情况4：继续修订循环
+    logger.info(f"🔄 [CheckRevisionLoop] 章节 {current_index} 继续修订循环")
+    return "continue"

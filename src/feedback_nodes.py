@@ -311,3 +311,24 @@ check_chapter_feedback_node = create_check_feedback_node(
     feedback_action_attr="chapter_feedback_action",
     feedback_error_attr="chapter_feedback_error"
 )
+
+
+def check_chapter_feedback_deep_mode_node(state: NovelState) -> Literal["success", "retry", "failure", "deep_skip"]:
+    """检查章节反馈处理结果，deep模式下跳过评估链直接进入supervisor"""
+    if state.gradio_mode:
+        return "deep_skip" if state.evaluation_mode == "deep" else "success"
+
+    logger.info(f"检查反馈处理结果: chapter_feedback_action = {getattr(state, 'chapter_feedback_action', None)}; chapter_feedback_error = {getattr(state, 'chapter_feedback_error', None)}")
+
+    if getattr(state, 'chapter_feedback_error', None):
+        return "failure"
+
+    action = getattr(state, 'chapter_feedback_action', None)
+    if action == "success" or action is None:
+        # deep模式跳过评估链，直接进入supervisor_node
+        if state.evaluation_mode == "deep":
+            return "deep_skip"
+        return "success"
+    elif action == "retry":
+        return "retry"
+    return "failure"

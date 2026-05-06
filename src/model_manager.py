@@ -313,7 +313,8 @@ class ClientPoolModelManager(ModelManager):
             else:
                 return await self._async_generate_openai_with_client(client, messages, params)
 
-        return await self.client_pool.execute(_execute)
+        result, client_id = await self.client_pool.execute(_execute)
+        return result
 
     def _generate_openai_with_messages(self, messages: List[Dict[str, Any]], params: BaseConfig) -> str:
         """使用同步客户端生成（第一个客户端）"""
@@ -444,3 +445,227 @@ class ClientPoolModelManager(ModelManager):
     def log_stats(self):
         """打印客户端统计信息"""
         self.client_pool.log_stats()
+
+
+# =============================================================================
+# 统一入口：工厂函数
+# =============================================================================
+
+# 导入 KeyRouter（被 MultiKeyManager 依赖）
+from src.multi_key_manager import KeyRouter
+
+
+class MultiKeyManager(ModelManager):
+    """多 Key 轮询管理器
+
+    使用 KeyRouter 实现多 Key 轮询，支持真正的并行请求。
+    """
+
+    def __init__(
+        self,
+        api_url: str,
+        api_keys: List[str],
+        model_name: Optional[str] = None,
+        max_retries: int = 3,
+        retry_delay: int = 1,
+        api_type: str = "openai",
+        max_concurrent_per_key: int = 3
+    ):
+        """
+        Args:
+            api_url: API 基础地址
+            api_keys: API Key 列表（支持多 Key）
+            model_name: 模型名称
+            max_retries: 最大重试次数
+            retry_delay: 重试延迟(秒)
+            api_type: API 类型，"openai" 或 "anthropic"
+            max_concurrent_per_key: 每个 Key 的最大并发数
+        """
+        self.model_name = model_name
+        self.api_type = api_type.lower()
+        self.max_retries = max_retries
+        self.retry_delay = retry_delay
+        self.api_url = api_url
+
+        # 创建 KeyRouter
+        self.key_router = KeyRouter(
+            keys=api_keys,
+            max_concurrent_per_key=max_concurrent_per_key,
+            enable_stats=True
+        )
+
+        # 为每个 key 创建独立的异步客户端
+        self._async_clients: Dict[str, Any] = {}
+        for key in api_keys:
+            if self.api_type == "anthropic":
+                self._async_clients[key] = anthropic.AsyncAnthropic(api_key=key, base_url=api_url)
+            else:
+                self._async_clients[key] = AsyncOpenAI(api_key=key, base_url=api_url)
+
+        logger.info(f"[MultiKeyManager] 初始化完成，共 {len(api_keys)} 个 Key，每个 Key 最大并发 {max_concurrent_per_key}")
+
+    def generate(self, messages: List[Dict[str, Any]], params: BaseConfig) -> str:
+        """同步生成（使用第一个 Key）"""
+        key = list(self._async_clients.keys())[0]
+        return asyncio.run(self._async_generate_with_key(key, messages, params))
+
+    async def async_generate(self, messages: List[Dict[str, Any]], params: BaseConfig) -> str:
+        """异步生成，通过 KeyRouter 分配 Key"""
+        async def _execute_with_key(key: str) -> str:
+            return await self._async_generate_with_key(key, messages, params)
+        return await self.key_router.execute(_execute_with_key)
+
+    async def _async_generate_with_key(
+        self,
+        key: str,
+        messages: List[Dict[str, Any]],
+        params: BaseConfig
+    ) -> str:
+        """使用指定 Key 异步生成"""
+        for attempt in range(self.max_retries):
+            try:
+                if self.api_type == "anthropic":
+                    return await self._async_generate_anthropic_with_key(key, messages, params)
+                else:
+                    return await self._async_generate_openai_with_key(key, messages, params)
+            except Exception as e:
+                logger.warning(f"[MultiKeyManager] Key {key[:8]}... 失败 (尝试 {attempt + 1}/{self.max_retries}): {str(e)[:80]}")
+                if attempt < self.max_retries - 1:
+                    backoff = 2 ** attempt
+                    await asyncio.sleep(backoff)
+                else:
+                    raise Exception(f"经过 {self.max_retries} 次重试后，API请求仍失败")
+
+    async def _async_generate_openai_with_key(
+        self,
+        key: str,
+        messages: List[Dict[str, Any]],
+        params: BaseConfig
+    ) -> str:
+        """使用指定 Key 的异步 OpenAI 生成"""
+        client = self._async_clients[key]
+        response = await client.chat.completions.create(
+            model=self.model_name,
+            messages=messages,
+            temperature=params.temperature,
+            top_p=params.top_p,
+            max_tokens=params.max_new_tokens
+        )
+        if not response.choices:
+            raise Exception(f"API 返回空 choices")
+        if not response.choices[0] or not hasattr(response.choices[0], 'message') or response.choices[0].message is None:
+            raise Exception(f"API 返回的 message 为 None")
+        content = response.choices[0].message.content
+        if content is None:
+            raise Exception(f"API 返回的 content 为 None")
+        return content
+
+    async def _async_generate_anthropic_with_key(
+        self,
+        key: str,
+        messages: List[Dict[str, Any]],
+        params: BaseConfig
+    ) -> str:
+        """使用指定 Key 的异步 Anthropic 生成"""
+        client = self._async_clients[key]
+        anthropic_messages = []
+        system_prompt = ""
+        for msg in messages:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            if role == "system":
+                system_prompt = content
+            elif role == "user":
+                anthropic_messages.append({"role": "user", "content": content})
+            elif role == "assistant":
+                anthropic_messages.append({"role": "assistant", "content": content})
+        response = await client.messages.create(
+            model=self.model_name,
+            system=system_prompt,
+            messages=anthropic_messages,
+            temperature=params.temperature,
+            max_tokens=params.max_new_tokens
+        )
+        if not response.content:
+            raise Exception(f"API 返回空 content")
+        result_text = ""
+        for block in response.content:
+            if block.type == "text":
+                result_text += block.text
+            elif block.type == "thinking":
+                pass
+        return result_text.strip()
+
+    def log_stats(self):
+        """打印 Key 使用统计"""
+        self.key_router.log_stats()
+
+
+# =============================================================================
+# 别名（兼容旧代码）
+# =============================================================================
+PooledManager = ClientPoolModelManager  # 单 Key 多客户端池
+
+
+# =============================================================================
+# 工厂函数
+# =============================================================================
+
+def create_model_manager(config, execution_mode: str = "serial") -> ModelManager:
+    """工厂函数，根据配置创建合适的模型管理器
+
+    Args:
+        config: ModelConfig 实例，包含所有配置
+        execution_mode: 执行模式，"serial" 或 "parallel"
+
+    Returns:
+        ModelManager 实例
+    """
+    model_type = config.model_type
+
+    if model_type == "local":
+        return LocalModelManager(config.model_path)
+
+    if model_type == "api":
+        if execution_mode == "parallel" and config.api_key:
+            # 单 Key 多客户端并行
+            return PooledManager(
+                api_url=config.api_url,
+                api_key=config.api_key,
+                model_name=config.model_name,
+                max_retries=config.max_retries,
+                retry_delay=config.retry_delay,
+                api_type=config.api_type,
+                num_clients=config.num_clients,
+                max_concurrent_per_client=config.max_concurrent_per_client
+            )
+        elif config.api_keys and len(config.api_keys) > 1:
+            # 多 Key 轮询
+            return MultiKeyManager(
+                api_url=config.api_url,
+                api_keys=config.api_keys,
+                model_name=config.model_name,
+                max_retries=config.max_retries,
+                retry_delay=config.retry_delay,
+                api_type=config.api_type,
+                max_concurrent_per_key=config.max_concurrent_per_key
+            )
+        else:
+            # 单 Key 单客户端（向后兼容）
+            return APIModelManager(
+                api_url=config.api_url,
+                api_key=config.api_key or "",
+                model_name=config.model_name,
+                max_retries=config.max_retries,
+                retry_delay=config.retry_delay,
+                api_type=config.api_type,
+                max_concurrent=config.max_concurrent_per_key
+            )
+
+    # 默认回退到 APIModelManager
+    return APIModelManager(
+        api_url=config.api_url or "",
+        api_key=config.api_key or "",
+        model_name=config.model_name,
+        api_type=config.api_type
+    )

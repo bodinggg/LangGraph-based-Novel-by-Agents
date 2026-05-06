@@ -5,8 +5,8 @@ import pytest
 import asyncio
 from contextlib import asynccontextmanager
 from unittest.mock import MagicMock, patch, AsyncMock
-from src.model_manager import ModelManager, APIModelManager, LocalModelManager
-from src.config_loader import BaseConfig
+from src.model_manager import ModelManager, APIModelManager, LocalModelManager, create_model_manager
+from src.config_loader import BaseConfig, ModelConfig
 
 
 class TestModelManagerInterface:
@@ -324,3 +324,62 @@ class TestAPIModelManagerAsync:
         # Should only contain text from text block, not thinking
         assert result == "Actual response text"
         assert "thinking" not in result.lower()
+
+
+class TestCreateModelManager:
+    """Tests for create_model_manager factory function"""
+
+    def test_create_model_manager_local(self):
+        """Test factory creates LocalModelManager for local model_type"""
+        with patch('src.model_manager.LocalModelManager') as mock_local:
+            mock_local.return_value = MagicMock(spec=LocalModelManager)
+            config = ModelConfig(model_type="local", model_path="/path/to/model")
+            manager = create_model_manager(config)
+            mock_local.assert_called_once_with("/path/to/model")
+            assert isinstance(manager, MagicMock)
+
+    def test_create_model_manager_single_key(self):
+        """Test factory creates SingleKeyManager for api without parallel mode"""
+        config = ModelConfig(
+            model_type="api",
+            api_url="https://api.test.com",
+            api_key="test-key",
+            model_name="test-model",
+            api_type="openai"
+        )
+        manager = create_model_manager(config, execution_mode="serial")
+        assert isinstance(manager, APIModelManager)
+
+    def test_create_model_manager_pooled(self):
+        """Test factory creates PooledManager for parallel mode with single key"""
+        config = ModelConfig(
+            model_type="api",
+            api_url="https://api.test.com",
+            api_key="test-key",
+            model_name="test-model",
+            api_type="openai",
+            num_clients=4
+        )
+        manager = create_model_manager(config, execution_mode="parallel")
+        # PooledManager should be a subclass of ModelManager with pool
+        from src.model_manager import PooledManager
+        assert isinstance(manager, PooledManager)
+
+    def test_create_model_manager_multi_key(self):
+        """Test factory creates MultiKeyManager for multiple api_keys"""
+        config = ModelConfig(
+            model_type="api",
+            api_url="https://api.test.com",
+            api_keys=["key1", "key2", "key3"],
+            model_name="test-model",
+            api_type="openai"
+        )
+        manager = create_model_manager(config)
+        from src.model_manager import MultiKeyManager
+        assert isinstance(manager, MultiKeyManager)
+
+    def test_create_model_manager_unknown_type_defaults_to_single_key(self):
+        """Test factory falls back to APIModelManager for unknown type"""
+        config = ModelConfig(model_type="unknown")
+        manager = create_model_manager(config)
+        assert isinstance(manager, APIModelManager)

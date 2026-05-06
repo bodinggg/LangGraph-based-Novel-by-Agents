@@ -251,8 +251,8 @@ class TestWriterAgent:
         result = agent.write_chapter(sample_state)
         assert result is not None
 
-    def test_async_write_chapter_returns_string(self, mock_model_manager, base_config, sample_state):
-        """Test async_write_chapter returns a string"""
+    def test_async_write_chapter_returns_tuple(self, mock_model_manager, base_config, sample_state):
+        """Test async_write_chapter returns (content, client_id) tuple"""
         agent = WriterAgent(mock_model_manager, base_config)
         mock_model_manager.async_generate = AsyncMock(return_value='{"title": "第一章", "content": "测试内容"}')
 
@@ -262,7 +262,11 @@ class TestWriterAgent:
 
         result = asyncio.run(agent.async_write_chapter(sample_state))
 
-        assert isinstance(result, str)
+        assert isinstance(result, tuple)
+        assert len(result) == 2
+        content, client_id = result
+        assert isinstance(content, str)
+        assert client_id is None  # mock model manager has no client_pool
         mock_model_manager.async_generate.assert_called_once()
 
 

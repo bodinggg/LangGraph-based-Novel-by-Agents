@@ -6,6 +6,7 @@ import shutil
 import tempfile
 from unittest.mock import MagicMock, patch
 from src.model import NovelOutline, ChapterOutline, Character, QualityEvaluation, FeedbackItem
+from src.model import PlotThread, CharacterArc, CharacterArcStage, WorldState, StoryBibleContent
 from src.storage import NovelStorage
 from src.core.state_manager import StateManager
 from src.thinking_logger import create_disabled_logger
@@ -22,6 +23,7 @@ def disable_logging():
             'main': mock_logger,
             'gradio': mock_logger,
             'feedback': mock_logger,
+            'specialist': mock_logger,
         }
         yield mock_log
 
@@ -109,3 +111,84 @@ def temp_state_manager():
     manager = StateManager(storage_dir=temp_dir)
     yield manager
     shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+# ============== StoryBible Fixtures ==============
+
+@pytest.fixture
+def sample_plot_thread():
+    """Sample plot thread for testing"""
+    return PlotThread(
+        id="plot_1",
+        name="主情节线",
+        status="active",
+        setup_chapter=1,
+        key_events=["事件1", "事件2"],
+        description="测试情节线"
+    )
+
+
+@pytest.fixture
+def sample_character_arc():
+    """Sample character arc for testing"""
+    stage1 = CharacterArcStage(
+        stage_name="迷茫",
+        chapter_range="1-5",
+        emotional_state="失落",
+        key_moment="失去亲人"
+    )
+    stage2 = CharacterArcStage(
+        stage_name="成长",
+        chapter_range="6-10",
+        emotional_state="坚定",
+        key_moment="突破自我"
+    )
+    return CharacterArc(
+        name="主角",
+        arc_stages=[stage1, stage2],
+        current_stage_index=0,
+        emotional_state="失落",
+        key_moments=["失去亲人"],
+        relationships={"配角1": "师徒", "配角2": "竞争对手"}
+    )
+
+
+@pytest.fixture
+def sample_world_state():
+    """Sample world state for testing"""
+    return WorldState(
+        chapter_index=1,
+        location="王城",
+        time="第一年春天",
+        active_factions=["王国", "公会"],
+        weather="晴朗",
+        mood="紧张",
+        description="故事开始于王城"
+    )
+
+
+@pytest.fixture
+def sample_story_bible(sample_plot_thread, sample_character_arc, sample_world_state):
+    """Sample story bible for testing"""
+    return StoryBibleContent(
+        novel_title="测试小说",
+        plot_threads=[sample_plot_thread],
+        character_arcs=[sample_character_arc],
+        world_states=[sample_world_state]
+    )
+
+
+# ============== Multi-Agent Fixtures ==============
+
+@pytest.fixture
+def fresh_blackboard():
+    """Create a fresh SharedBlackboard for testing"""
+    from src.multi_agent.blackboard import SharedBlackboard
+    return SharedBlackboard("测试小说")
+
+
+@pytest.fixture
+def fresh_revision_queue():
+    """Create a fresh RevisionQueue for testing"""
+    from src.multi_agent.revision_queue import RevisionQueue
+    return RevisionQueue(max_size=100)

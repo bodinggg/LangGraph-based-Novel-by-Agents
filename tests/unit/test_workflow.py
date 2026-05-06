@@ -45,7 +45,7 @@ class TestCreateWorkflow:
 
         assert result is not None
 
-    @patch('src.workflow.LocalModelManager')
+    @patch('src.model_manager.LocalModelManager')
     def test_create_workflow_with_local_model(self, mock_local_manager, disable_logging):
         """Test workflow creation with local model configuration"""
         # Mock the LocalModelManager to avoid actually loading the model
@@ -95,8 +95,6 @@ class TestCreateWorkflow:
             "validate_chapter",
             "chapter_feedback",
             "process_chapter_feedback",
-            "generate_entities",
-            "validate_entities",
             "evaluate_chapter",
             "validate_evaluate",
             "evaluate_report",

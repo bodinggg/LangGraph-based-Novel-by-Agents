@@ -9,98 +9,75 @@ from src.agent import (
     WriterAgent,
     ReflectAgent,
     EntityAgent,
-) 
+)
 from src.node import *
-# from src.unified_feedback_system import (
-#     outline_feedback_node, process_outline_feedback_node, check_outline_feedback_node,
-#     character_feedback_node, process_character_feedback_node, check_character_feedback_node,
-#     chapter_feedback_node, process_chapter_feedback_node, check_chapter_feedback_node
-# )
-
 from src.feedback_nodes import (
     outline_feedback_node, process_outline_feedback_node, check_outline_feedback_node,
     character_feedback_node, process_character_feedback_node, check_character_feedback_node,
-    chapter_feedback_node, process_chapter_feedback_node, check_chapter_feedback_node
+    chapter_feedback_node, process_chapter_feedback_node, check_chapter_feedback_deep_mode_node
 )
+from src.supervisor_node import supervisor_node, init_supervisor_node
 
 from src.state import NovelState
 from src.log_config import loggers
-from src.model_manager import LocalModelManager
-from src.multi_key_model_manager import MultiKeyAPIModelManager
+from src.model_manager import create_model_manager
 from src.config_loader import (
     OutlineConfig,
     CharacterConfig,
     WriterConfig,
     ReflectConfig,
-    EntityConfig,
     BaseConfig,
     ModelConfig
 )
+from src.agents.registry import AgentRegistry
 
 logger = loggers['workflow']
+
+
+def _get_agent(agent_name: str, model_manager, config) -> object:
+    """获取 Agent 实例（优先从注册表，否则直接实例化）"""
+    if AgentRegistry.is_registered(agent_name):
+        logger.info(f"[Workflow] 从注册表获取 Agent: {agent_name}")
+        return AgentRegistry.get(agent_name, model_manager=model_manager, config=config)
+    else:
+        # 回退到直接实例化（向后兼容）
+        agent_map = {
+            "outline": OutlineGeneratorAgent,
+            "character": CharacterAgent,
+            "writer": WriterAgent,
+            "reflect": ReflectAgent,
+            "entity": EntityAgent,
+        }
+        agent_class = agent_map.get(agent_name)
+        if agent_class:
+            logger.info(f"[Workflow] 直接实例化 Agent: {agent_name}")
+            return agent_class(model_manager, config)
+        raise KeyError(f"Unknown agent: {agent_name}")
 
 # 构建工作流
 def create_workflow(model_config: ModelConfig, Agent_config: BaseConfig= None, execution_mode: str = "serial") -> StateGraph:
     """创建包含章节写作和质量评审的完整工作流"""
-    # 获取共享模型实例和分词器
-    model_type = model_config.model_type
-
-    if model_type == "local":
-        model_manager = LocalModelManager(model_config.model_path)
-    elif model_type == "api":
-        # 根据配置选择不同的并行策略
-        if execution_mode == "parallel" and model_config.api_key:
-            # 策略1: 单 Key 多客户端并行（推荐）
-            # 使用同一个 API Key 创建多个客户端实例，实现真正并行
-            from src.model_manager import ClientPoolModelManager
-            model_manager = ClientPoolModelManager(
-                api_url=model_config.api_url,
-                api_key=model_config.api_key,
-                model_name=model_config.model_name,
-                max_retries=model_config.max_retries,
-                retry_delay=model_config.retry_delay,
-                api_type=model_config.api_type,
-                num_clients=model_config.num_clients,
-                max_concurrent_per_client=model_config.max_concurrent_per_client
-            )
-            logger.info(f"成功加载单Key多客户端并行管理器: {model_config.num_clients} 个客户端")
-        elif model_config.api_keys:
-            # 策略2: 多 Key 轮询
-            model_manager = MultiKeyAPIModelManager(
-                api_url=model_config.api_url,
-                api_keys=model_config.api_keys,
-                model_name=model_config.model_name,
-                max_retries=model_config.max_retries,
-                retry_delay=model_config.retry_delay,
-                api_type=model_config.api_type,
-                max_concurrent_per_key=model_config.max_concurrent_per_key
-            )
-            logger.info(f"成功加载多Key模型管理器，共 {len(model_config.api_keys)} 个 Key")
-        else:
-            # 策略3: 单 Key 单客户端（向后兼容）
-            from src.model_manager import APIModelManager
-            model_manager = APIModelManager(
-                api_url=model_config.api_url,
-                api_key=model_config.api_key,
-                model_name=model_config.model_name,
-                max_retries=model_config.max_retries,
-                retry_delay=model_config.retry_delay,
-                api_type=model_config.api_type,
-                max_concurrent=model_config.max_concurrent_per_key
-            )
-            logger.info("成功加载单Key模型管理器")
-    logger.info(f"成功加载{model_type}模型管理器")
+    # 获取共享模型实例
+    model_manager = create_model_manager(model_config, execution_mode)
+    logger.info(f"成功加载{model_config.model_type}模型管理器")
 
     # Use agent_config for outline settings, fallback to defaults
     outline_cfg = Agent_config if Agent_config is not None else OutlineConfig
     master_outline = outline_cfg.master_outline
 
-    # 初始化 Agent
-    outline_agent = OutlineGeneratorAgent(model_manager, outline_cfg)    # 大纲
-    character_agent = CharacterAgent(model_manager, CharacterConfig)         # 角色
-    writer_agent = WriterAgent(model_manager, WriterConfig)               # 写作
-    reflect_agent = ReflectAgent(model_manager, ReflectConfig)             # 反思
-    entity_agent = EntityAgent(model_manager, EntityConfig)                 # 实体识别
+    # 如果注册表为空，先注册内置 Agent
+    if not AgentRegistry.list_agents():
+        from src.agents.setup import register_builtin_agents
+        register_builtin_agents()
+
+    # 初始化 Agent（优先从注册表获取）
+    outline_agent = _get_agent("outline", model_manager, outline_cfg)    # 大纲
+    character_agent = _get_agent("character", model_manager, CharacterConfig)         # 角色
+    writer_agent = _get_agent("writer", model_manager, WriterConfig)               # 写作
+    reflect_agent = _get_agent("reflect", model_manager, ReflectConfig)             # 反思
+
+    # 初始化 SupervisorNode（多 Agent 并行检查）
+    init_supervisor_node(model_manager)
 
     logger.info("代理初始化完成, 开始构建工作流图...")
 
@@ -148,11 +125,6 @@ def create_workflow(model_config: ModelConfig, Agent_config: BaseConfig= None, e
     # 章节反馈节点
     workflow.add_node("chapter_feedback", chapter_feedback_node)
     workflow.add_node("process_chapter_feedback", process_chapter_feedback_node)
-    
-    # 实体识别
-    workflow.add_node("generate_entities",
-                      lambda state: generate_entities_node(state, entity_agent))
-    workflow.add_node("validate_entities", validate_entities_node)
     
     # 评估
     workflow.add_node("evaluate_chapter",
@@ -308,9 +280,10 @@ def create_workflow(model_config: ModelConfig, Agent_config: BaseConfig= None, e
     workflow.add_edge("chapter_feedback", "process_chapter_feedback")
     workflow.add_conditional_edges(
         "process_chapter_feedback",
-        check_chapter_feedback_node,
+        check_chapter_feedback_deep_mode_node,
         {
-            "success": "evaluate_chapter",
+            "success": "evaluate_chapter",      # fast模式：走评估链
+            "deep_skip": "supervisor_node",     # deep模式：跳过评估，直接进入supervisor
             "retry": "write_chapter",
             "failure": "failure"
         }
@@ -335,21 +308,23 @@ def create_workflow(model_config: ModelConfig, Agent_config: BaseConfig= None, e
         "evaluate2wirte",
         check_evaluation_chapter_node,
         {
-            "accept":"generate_entities",   # 验证通过，执行实体分析
+            "accept":"supervisor_node",     # 深度模式：验证通过，进入 supervisor 检查
             "revise":"write_chapter",
-            "force_accpet":"accpet_chapter"
+            "force_accpet":"accpet_chapter", # 强制接受
+            "fast_accept":"accpet_chapter",  # 快速模式：直接接受，跳过 supervisor
         }
     )
-    
-    # 新增：实体识别
-    workflow.add_edge("generate_entities", "validate_entities")
+
+    # Supervisor 检查节点（重构后：直接决策，不再经过 Council）
+    workflow.add_node("supervisor_node", supervisor_node)
+
+    # check_revision_node 根据 revision_needed 决定下一步
     workflow.add_conditional_edges(
-        "validate_entities",
-        check_entities_node,
+        "supervisor_node",
+        lambda state: "revise" if getattr(state, 'revision_needed', False) else "accept_chapter",
         {
-            "success": "accpet_chapter",    # 实体识别成功，接受章节
-            "retry": "generate_entities",
-            "failure": "failure"
+            "revise": "write_chapter",        # 需要修订，重新撰写
+            "accept_chapter": "accpet_chapter" # 无需修订，接受章节
         }
     )
 

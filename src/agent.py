@@ -1,7 +1,8 @@
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional, Tuple
 import json
 from pathlib import Path
 import asyncio
+import time
 
 from src.prompt import *
 from src.enhanced_prompts import get_prompt_template
@@ -12,16 +13,40 @@ from src.model_manager import ModelManager
 from src.config_loader import BaseConfig
 from src.thinking_logger import log_agent_thinking
 from src.evaluation_reporter import EvaluationReporter
+from src.agents.base import BaseAgent
+from src.client_pool import get_current_client_id
+from src.log_config import loggers
 
+agent_logger = loggers['specialist']
+
+
+def log_agent_call(agent_name: str, method_name: str):
+    """装饰器：记录Agent方法调用"""
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            start = time.time()
+            agent_logger.info(f"📖 [{agent_name}] {method_name} - 开始")
+            result = func(*args, **kwargs)
+            elapsed = time.time() - start
+            # 记录返回内容摘要（不含完整内容）
+            if isinstance(result, str):
+                summary = result[:100] + "..." if len(result) > 100 else result
+                agent_logger.info(f"✅ [{agent_name}] {method_name} - 完成 ({elapsed:.1f}s)")
+            else:
+                agent_logger.info(f"✅ [{agent_name}] {method_name} - 完成 ({elapsed:.1f}s)")
+            return result
+        return wrapper
+    return decorator
 
 
 # 大纲代理 - 用于生成统领大纲
-class OutlineGeneratorAgent:
+class OutlineGeneratorAgent(BaseAgent):
     def __init__(self, model_manager: ModelManager, config: BaseConfig):
         self.model_manager = model_manager
         self.config = config
 
     # 总纲生成(卷册划分)
+    @log_agent_call("OutlineGeneratorAgent", "generate_master_outline")
     def generate_master_outline(self, user_intent: str)->str:
         min_chapters = self.config.min_chapters
         volume = self.config.volume
@@ -71,6 +96,7 @@ class OutlineGeneratorAgent:
         return response
         
     # 基于总纲生成单卷
+    @log_agent_call("OutlineGeneratorAgent", "generate_volume_chapters")
     def generate_volume_chapters(self, state: NovelState, volume_index:int) -> str:
         master_outline = state.validated_outline.master_outline
         current_volume = master_outline[volume_index]
@@ -119,8 +145,8 @@ class OutlineGeneratorAgent:
         
         return response
     
+    @log_agent_call("OutlineGeneratorAgent", "generate_outline")
     def generate_outline(self, state: NovelState) -> str:
-        
         user_intent = state.user_intent
         error_message = state.outline_validated_error
         
@@ -183,12 +209,13 @@ class OutlineGeneratorAgent:
         return response
 
 # 角色代理 - 用于生成角色档案
-class CharacterAgent:
+class CharacterAgent(BaseAgent):
     def __init__(self, model_manager: ModelManager, config: BaseConfig):
         self.model_manager = model_manager
         self.config = config
         
     
+    @log_agent_call("CharacterAgent", "generate_characters")
     def generate_characters(self, state: NovelState) -> str:
         # 从大纲中提取角色相关信息
         error_message = state.characters_validated_error
@@ -290,7 +317,7 @@ class CharacterAgent:
         return response
     
 # 写作代理 - 用于单章撰写
-class WriterAgent:
+class WriterAgent(BaseAgent):
     def __init__(self, model_manager: ModelManager, config: BaseConfig):
         self.model_manager = model_manager
         self.config = config
@@ -298,41 +325,50 @@ class WriterAgent:
         self.feedback_processor = FeedbackProcessor(max_feedback_tokens=800)
         self.content_referencer = ContentReferencer()
     
+    @log_agent_call("WriterAgent", "write_chapter")
     def write_chapter(self, state: NovelState) -> str:
         """撰写单章内容，增强反馈处理"""
-        
         error_message = state.current_chapter_validated_error
         characters = state.novel_storage.load_characters()
         outline = state.novel_storage.load_outline()
-        
+
         # 调用当前章节涉及角色的角色档案
         characters = [c for c in characters if c.name in outline.chapters[state.current_chapter_index].characters_involved]
         current_chapter_index = state.current_chapter_index
-        
+
         # 获取评估反馈
         evaluation = state.validated_evaluation
         current_content = state.validated_chapter_draft
-        
-        # 处理反馈（如果存在）
+
+        # 处理反馈（如果存在）- 现在 validated_evaluation 已统一包含 ReflectAgent 和 Supervisor/Council 的评估
         processed_feedback = None
-        if evaluation and not evaluation.passes:
+        if evaluation:
             processed_feedback = self.feedback_processor.process_evaluation(
-                evaluation, 
-                current_content, 
+                evaluation,
+                current_content,
                 state.evaluate_attempt
             )
-        
+
         # 根据反馈确定写作策略
         strategy = "maintain_current"  # 默认策略
         if processed_feedback:
             strategy = processed_feedback.revision_strategy
-        
+
         # 获取对应的提示词模板
         prompt_template = get_prompt_template(strategy)
-        
+
         # 准备基础参数
         base_params = self._prepare_base_params(state, characters, outline, current_chapter_index)
-        
+
+        # 添加修订建议到基础参数（来自统一的 processed_feedback）
+        if processed_feedback and not processed_feedback.evaluation.passes:
+            revision_context = self.feedback_processor.generate_revision_prompt_context(processed_feedback)
+            base_params['revision_suggestions'] = revision_context
+            base_params['revision_priority'] = processed_feedback.revision_strategy
+        else:
+            base_params['revision_suggestions'] = "无"
+            base_params['revision_priority'] = "none"
+
         # 根据策略生成提示词
         if strategy == "maintain_current" or not processed_feedback:
             prompt = self._generate_base_prompt(prompt_template, base_params, error_message)
@@ -355,8 +391,12 @@ class WriterAgent:
 
         return response
 
-    async def async_write_chapter(self, state: NovelState) -> str:
-        """异步版本的章节撰写"""
+    async def async_write_chapter(self, state: NovelState) -> Tuple[str, Optional[str]]:
+        """异步版本的章节撰写
+
+        Returns:
+            (content, client_id) 元组。client_id 为 None 表示未使用 ClientPool
+        """
         error_message = state.current_chapter_validated_error
         characters = state.novel_storage.load_characters()
         outline = state.novel_storage.load_outline()
@@ -367,8 +407,9 @@ class WriterAgent:
         evaluation = state.validated_evaluation
         current_content = state.validated_chapter_draft
 
+        # 处理反馈（如果存在）- 现在 validated_evaluation 已统一包含 ReflectAgent 和 Supervisor/Council 的评估
         processed_feedback = None
-        if evaluation and not evaluation.passes:
+        if evaluation:
             processed_feedback = self.feedback_processor.process_evaluation(
                 evaluation,
                 current_content,
@@ -382,6 +423,15 @@ class WriterAgent:
         prompt_template = get_prompt_template(strategy)
         base_params = self._prepare_base_params(state, characters, outline, current_chapter_index)
 
+        # 添加修订建议到基础参数（来自统一的 processed_feedback）
+        if processed_feedback and not processed_feedback.evaluation.passes:
+            revision_context = self.feedback_processor.generate_revision_prompt_context(processed_feedback)
+            base_params['revision_suggestions'] = revision_context
+            base_params['revision_priority'] = processed_feedback.revision_strategy
+        else:
+            base_params['revision_suggestions'] = "无"
+            base_params['revision_priority'] = "none"
+
         if strategy == "maintain_current" or not processed_feedback:
             prompt = self._generate_base_prompt(prompt_template, base_params, error_message)
         else:
@@ -392,6 +442,10 @@ class WriterAgent:
 
         response = await self.model_manager.async_generate(messages, self.config)
 
+        # 在 contextvar 被 reset 之前捕获 client_id
+        # 此处仍在 ClientPool.execute() 的上下文内，contextvar 尚未被 finally 重置
+        client_id = get_current_client_id()
+
         log_agent_thinking(
             agent_name="WriterAgent",
             node_name="async_write_chapter",
@@ -400,18 +454,69 @@ class WriterAgent:
             error_message=error_message
         )
 
-        return response
+        return response, client_id
 
         
     
+    def _format_character_arcs(self, character_arcs: List) -> str:
+        """格式化角色弧线信息用于提示词（Pydantic对象）"""
+        if not character_arcs:
+            return "无"
+
+        arcs_info = []
+        for arc in character_arcs[:3]:  # 最多3个角色
+            arc_stages = arc.arc_stages
+            current_stage_index = arc.current_stage_index
+            current_stage = arc_stages[current_stage_index] if arc_stages and current_stage_index < len(arc_stages) else None
+            stage_name = current_stage.stage_name if current_stage else "未知"
+            emotional = current_stage.emotional_state if current_stage else "未知"
+            key_moment = current_stage.key_moment if current_stage else "无"
+            arcs_info.append(
+                f"角色：{arc.name} | 当前阶段：{stage_name} | 情感状态：{emotional} | 关键时刻：{key_moment}"
+            )
+        return "\n".join(arcs_info)
+
+    def _format_plot_threads(self, plot_threads: List) -> str:
+        """格式化情节线信息用于提示词（Pydantic对象）"""
+        if not plot_threads:
+            return "无"
+
+        threads_info = []
+        for thread in plot_threads[:3]:  # 最多3个情节线
+            status = "进行中" if thread.status == "active" else "已回收"
+            foreshadow = thread.foreshadow if hasattr(thread, 'foreshadow') and thread.foreshadow else "无"
+            threads_info.append(
+                f"情节线：{thread.name} | 状态：{status} | 伏笔：{foreshadow}"
+            )
+        return "\n".join(threads_info)
+
+    def _format_world_state(self, world_states: List) -> str:
+        """格式化世界状态信息用于提示词（Pydantic对象）"""
+        if not world_states:
+            return "无"
+
+        # 使用最新的世界状态
+        latest_ws = world_states[-1]
+        return f"当前位置：{latest_ws.location} | 时间：{latest_ws.time} | 描述：{latest_ws.description}"
+        return f"当前位置：{location} | 时间：{time} | 描述：{description}"
+
+    def _format_council_feedback(self, council_decision: Dict) -> str:
+        """格式化协商反馈用于提示词"""
+        if not council_decision:
+            return "无"
+
+        decision = council_decision.get('decision', 'unknown')
+        reasoning = council_decision.get('reasoning', '无')
+        affected = ', '.join(council_decision.get('affected_agents', []))
+        return f"决策：{decision} | 原因：{reasoning} | 涉及Agent：{affected}"
+
     def _prepare_base_params(self, state: NovelState, characters: List, outline, current_chapter_index: int) -> Dict:
         """准备基础参数，简化promt注入变量逻辑"""
         # 加载上一章内容（如果存在）
         prev_chapter = state.novel_storage.load_chapter(current_chapter_index - 1) if current_chapter_index > 0 else None
         pre_chapter = prev_chapter.content[-100:] if prev_chapter else "无"
-        pre_entity = state.novel_storage.load_entity(current_chapter_index - 1) if current_chapter_index > 0 else None
-        
-        return {
+
+        params = {
             "genre": outline.genre,
             "outline_setting": outline.setting,
             "outline_title": outline.title,
@@ -428,9 +533,37 @@ class WriterAgent:
             "character": characters,
             "current_chapter_idx": current_chapter_index,
             "num_chapters": len(outline.chapters),
-            "word_count": 3000,
-            "pre_entity": pre_entity
+            "word_count": 3000
         }
+
+        # Phase 2: 添加 StoryBible 上下文（角色弧线、情节线、世界状态）
+        story_bible_data = getattr(state, '_story_bible_data', None)
+        if story_bible_data:
+            params['character_arcs'] = self._format_character_arcs(story_bible_data.get('character_arcs', []))
+            params['active_plot_threads'] = self._format_plot_threads(story_bible_data.get('plot_threads', []))
+            params['world_state'] = self._format_world_state(story_bible_data.get('world_states', []))
+        else:
+            params['character_arcs'] = "无"
+            params['active_plot_threads'] = "无"
+            params['world_state'] = "无"
+
+        # Phase 3: 添加协商反馈（如果需要修订）
+        council_decision = getattr(state, 'council_decision', None)
+        if council_decision:
+            params['council_feedback'] = self._format_council_feedback(council_decision)
+        else:
+            params['council_feedback'] = "无"
+
+        # Phase 4: 添加修订建议（来自 SupervisorNode 或 Council）
+        revision_notes = getattr(state, 'revision_notes', None)
+        if revision_notes:
+            # 如果有 revision_notes（来自 Council），优先使用它
+            params['revision_suggestions'] = f"【协商修订建议】{revision_notes}"
+        else:
+            params['revision_suggestions'] = getattr(state, 'revision_suggestions', '无')
+        params['revision_priority'] = getattr(state, 'revision_priority', 'none')
+
+        return params
     
     def _generate_base_prompt(self, template: str, params: Dict, error_message: str = None) -> str:
         """生成基础写作提示词"""
@@ -441,41 +574,86 @@ class WriterAgent:
             
         return prompt
     
-    def _generate_revision_prompt(self, template: str, params: Dict, 
+    def _generate_revision_prompt(self, template: str, params: Dict,
                                 processed_feedback, current_content) -> str:
         """生成修改版提示词"""
-        
+
+        # 如果没有有效反馈或 current_content 无效，使用基础提示词
+        # processed_feedback 可能是对象（FeedbackProcessing）或 dict（来自 _process_revision_context）
+        if not processed_feedback:
+            fallback_params = params.copy()
+            fallback_params.setdefault('revision_strategy', 'general_revision')
+            return self._generate_base_prompt(template, fallback_params)
+
+        # 获取 revision_strategy（兼容对象和 dict）
+        if isinstance(processed_feedback, dict):
+            revision_strategy = processed_feedback.get('revision_strategy')
+        else:
+            revision_strategy = getattr(processed_feedback, 'revision_strategy', None)
+
+        if not revision_strategy:
+            fallback_params = params.copy()
+            fallback_params.setdefault('revision_strategy', 'general_revision')
+            return self._generate_base_prompt(template, fallback_params)
+
+        # 检查 current_content 是否有效
+        has_valid_content = current_content is not None and hasattr(current_content, 'title') and hasattr(current_content, 'content')
+
+        # 检查 evaluation 是否有效（只有对象类型才有 evaluation 属性）
+        has_valid_evaluation = False
+        if not isinstance(processed_feedback, dict):
+            has_valid_evaluation = (processed_feedback.evaluation is not None and
+                                    hasattr(processed_feedback.evaluation, 'feedback_items'))
+
+        # 如果 evaluation 无效但需要用它，使用基础提示词
+        strategy_needs_evaluation = revision_strategy in [
+            "targeted_revision", "character_focused", "plot_focused"
+        ]
+        if strategy_needs_evaluation and not has_valid_evaluation:
+            fallback_params = params.copy()
+            fallback_params.setdefault('revision_strategy', 'general_revision')
+            return self._generate_base_prompt(template, fallback_params)
+
+        # 如果 current_content 无效，使用基础提示词
+        if not has_valid_content:
+            return self._generate_base_prompt(template, params)
+
         # 根据策略添加特定参数
         revision_params = params.copy()
-        
-        if processed_feedback.revision_strategy == "targeted_revision":
+
+        if revision_strategy == "targeted_revision":
+            # 获取 summary（兼容对象和 dict）
+            if isinstance(processed_feedback, dict):
+                feedback_summary = processed_feedback.get('summary', '需要改进')
+            else:
+                feedback_summary = getattr(processed_feedback, 'summary', '需要改进')
             revision_params.update({
-                "original_title": current_content.title,
-                "original_content": current_content.content[:2000],  # 限制长度
-                "feedback_summary": processed_feedback.summary,
-                "key_improvements": self._format_key_improvements(processed_feedback.evaluation.feedback_items),
-                "revision_strategy": processed_feedback.revision_strategy
+                "original_title": current_content.title if has_valid_content else "未知标题",
+                "original_content": current_content.content[:2000] if has_valid_content else "",
+                "feedback_summary": feedback_summary,
+                "key_improvements": self._format_key_improvements(processed_feedback.evaluation.feedback_items) if has_valid_evaluation else "需要改进",
+                "revision_strategy": revision_strategy
             })
-        elif processed_feedback.revision_strategy == "expand_content":
+        elif revision_strategy == "expand_content":
             revision_params.update({
-                "original_title": current_content.title,
-                "original_content": current_content.content[:1500],
-                "current_length": len(current_content.content),
-                "expansion_needed": max(0, 3000 - len(current_content.content)),
+                "original_title": current_content.title if has_valid_content else "未知标题",
+                "original_content": current_content.content[:1500] if has_valid_content else "",
+                "current_length": len(current_content.content) if has_valid_content else 0,
+                "expansion_needed": max(0, 3000 - len(current_content.content)) if has_valid_content else 0,
                 "expansion_strategy": "丰富细节描写，增加角色互动，扩展情节发展"
             })
-        elif processed_feedback.revision_strategy == "character_focused":
+        elif revision_strategy == "character_focused":
             revision_params.update({
-                "original_content": current_content.content[:2000],
-                "character_feedback": self._extract_character_feedback(processed_feedback.evaluation.feedback_items),
-                "character_profiles": self._format_character_profiles(params["character"])
+                "original_content": current_content.content[:2000] if has_valid_content else "",
+                "character_feedback": self._extract_character_feedback(processed_feedback.evaluation.feedback_items) if has_valid_evaluation else "角色表现需要改进",
+                "character_profiles": self._format_character_profiles(params.get("character", []))
             })
-        elif processed_feedback.revision_strategy == "plot_focused":
+        elif revision_strategy == "plot_focused":
             revision_params.update({
-                "original_content": current_content.content[:2000],
-                "plot_feedback": self._extract_plot_feedback(processed_feedback.evaluation.feedback_items)
+                "original_content": current_content.content[:2000] if has_valid_content else "",
+                "plot_feedback": self._extract_plot_feedback(processed_feedback.evaluation.feedback_items) if has_valid_evaluation else "情节逻辑需要改进"
             })
-        elif processed_feedback.revision_strategy == "comprehensive_rewrite":
+        elif revision_strategy == "comprehensive_rewrite":
             revision_params.update({
                 "feedback_history": self._format_feedback_history(processed_feedback)
             })
@@ -520,10 +698,9 @@ class WriterAgent:
         """扩写"""
         pass
 
-    
 
 # 反思代理 - 用于评审章节质量
-class ReflectAgent:
+class ReflectAgent(BaseAgent):
     def __init__(self, model_manager: ModelManager, config: BaseConfig):
         self.model_manager = model_manager
         self.config = config
@@ -532,6 +709,7 @@ class ReflectAgent:
         self.evaluation_reporter = EvaluationReporter()
         
     
+    @log_agent_call("ReflectAgent", "evaluate_chapter")
     def evaluate_chapter(self, state: NovelState) -> str:
         """评估章节质量并提供反馈 - 增强版智能化评测"""
         error_message = state.evaluation_validated_error
@@ -694,15 +872,15 @@ class ReflectAgent:
 
 
 # 实体代理 - 用于控制情节发展
-class EntityAgent:
+class EntityAgent(BaseAgent):
     def __init__(self, model_manager: ModelManager, config: BaseConfig):
         self.model_manager = model_manager
         self.config = config
         self.system_prompt = WORLD_SYS_PROMPT
         
+    @log_agent_call("EntityAgent", "generate_entities")
     def generate_entities(self, state: NovelState) :
         """根据章节内容添加动态实体信息，帮助维护情节一致性"""
- 
         text_content = state.validated_chapter_draft.content
         chapter_name = state.validated_chapter_draft.title
         

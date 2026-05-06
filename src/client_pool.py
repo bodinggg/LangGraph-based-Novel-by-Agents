@@ -100,14 +100,14 @@ class ClientPool:
             f"每客户端最大并发 {max_concurrent_per_client}"
         )
 
-    async def execute(self, coro_func: Callable[[AsyncOpenAI, str], Any]) -> Any:
+    async def execute(self, coro_func: Callable[[AsyncOpenAI, str], Any]) -> tuple:
         """执行协程，自动分配客户端（轮询）
 
         Args:
             coro_func: 协程函数，签名 (client, client_id) -> result
 
         Returns:
-            协程函数的结果
+            (result, client_id) 元组
         """
         # 获取下一个客户端（线程安全轮询）
         async with self._lock:
@@ -132,7 +132,7 @@ class ClientPool:
                 stats.success_count += 1
                 stats.total_latency += latency
                 logger.info(f"[{client_id}] 完成，耗时 {latency:.2f}s")
-                return result
+                return result, client_id
             except Exception as e:
                 stats.failure_count += 1
                 logger.warning(f"[{client_id}] 失败: {str(e)[:80]}")
@@ -152,10 +152,11 @@ class ClientPool:
             num_tasks: 任务数量
 
         Returns:
-            结果列表
+            结果列表（每个元素为 (result, client_id) 元组）
         """
         tasks = [self.execute(coro_func) for _ in range(num_tasks)]
-        return await asyncio.gather(*tasks, return_exceptions=True)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        return results
 
     def get_stats(self) -> Dict[str, ClientStats]:
         """获取所有客户端的统计信息"""

@@ -20,6 +20,9 @@ class NovelState(BaseModel):
     # 执行模式: "serial"（串行）或 "parallel"（并行）
     execution_mode: str = "serial"
 
+    # 评估模式: "fast"（快速，仅 ReflectAgent）或 "deep"（深度，5个 Specialists）
+    evaluation_mode: str = "deep"
+
     # 每个环节重试次数记录
     attempt: int=0
     evaluate_attempt: int=0 # 特殊在于评估有重试机制，写作-评估也有重试机制
@@ -67,7 +70,21 @@ class NovelState(BaseModel):
     # 实体生成控制
     raw_entities: Optional[str] = None
     entities_validated_error: Optional[str] = None
-     
+
+    # SupervisorNode 相关字段
+    supervisor_result: Optional[dict] = None
+    revision_needed: bool = False
+    revision_priority: str = "none"
+    revision_notes: str = ""
+    revision_context: Optional[dict] = None  # {chapter_index, revision_requests, count}
+    supervisor_recheck_count: int = 0  # 追踪修订循环次数
+    max_revision_loops: int = 3  # 最多允许3轮修订
+
+    # CouncilNode 相关字段
+    council_decision: Optional[dict] = None
+    council_enabled: bool = False
+    council_result: Optional[str] = None
+
     # 反馈控制
     outline_feedback_request: Optional[dict] = None
     outline_feedback_id: Optional[str] = None

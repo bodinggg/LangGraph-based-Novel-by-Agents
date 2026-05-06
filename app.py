@@ -21,6 +21,10 @@ def get_args():
     parser.add_argument("--model_type", default='api',type=str, help="local or api")
     parser.add_argument("--hitl", default=False, type=bool, help="hitl or not")
     parser.add_argument("--force", action="store_true", help="强制开始新工作流，不询问断点续传")
+    parser.add_argument("--min-chapters", type=int, default=None, help="最小章节数（默认从OutlineConfig读取）")
+    parser.add_argument("--volume", type=int, default=None, help="分卷数量（默认从OutlineConfig读取）")
+    parser.add_argument("--master-outline", type=lambda x: x.lower()=='true' or x=='1', default=None, help="是否开启分卷解析大纲功能（默认True）")
+    parser.add_argument("--execution-mode", type=str, default='serial', choices=['serial', 'parallel'], help="执行模式：serial串行/parallel并行（默认serial）")
     return parser.parse_args()
 
 api_key = os.getenv("API_KEY")
@@ -77,6 +81,7 @@ def main():
     if model_type == "api":
         model_name = input("请输入你的模型名字：")
         model_config = ModelConfig(
+            model_type="api",
             api_key=api_key,
             api_url=base_url,
             model_name=model_name,
@@ -85,13 +90,55 @@ def main():
     elif model_type == "local":
         model_path = input("请输入你的模型路径：")
         model_config = ModelConfig(
+            model_type="local",
             model_path=model_path
         )
+
+    # 交互式选择执行模式
+    print("\n请选择执行模式：")
+    print("1. 串行模式（稳定，单章节依次生成）")
+    print("2. 并行模式（快速，需要配置多 API Key 或启用多客户端）")
+    while True:
+        mode_choice = input("请输入选项 (1/2，默认1): ").strip()
+        if mode_choice == "2":
+            execution_mode = "parallel"
+            break
+        elif mode_choice in ("", "1"):
+            execution_mode = "serial"
+            break
+        else:
+            print("无效选项，请重新输入")
+
+    # 交互式选择评估模式
+    print("\n请选择评估模式：")
+    print("1. 快速模式（ReflectAgent 简单评估，速度快）")
+    print("2. 深度模式（5个 Specialists 并行深度分析，质量高）")
+    while True:
+        eval_choice = input("请输入选项 (1/2，默认2): ").strip()
+        if eval_choice == "1":
+            evaluation_mode = "fast"
+            break
+        elif eval_choice in ("", "2"):
+            evaluation_mode = "deep"
+            break
+        else:
+            print("无效选项，请重新输入")
 
     try:
         logger.info("开始小说生成流程")
 
-        app = create_workflow(model_config)
+        # 构建 agent_config（支持命令行参数覆盖）
+        min_chapters = args.min_chapters if args.min_chapters is not None else OutlineConfig.min_chapters
+        volume = args.volume if args.volume is not None else OutlineConfig.volume
+        master_outline = args.master_outline if args.master_outline is not None else OutlineConfig.master_outline
+
+        agent_config = BaseConfig(
+            min_chapters=min_chapters,
+            volume=volume,
+            master_outline=master_outline
+        )
+
+        app = create_workflow(model_config, agent_config, execution_mode=execution_mode)
 
         # 如果有保存的意图，直接使用；否则要求输入
         if saved_user_intent:
@@ -106,7 +153,11 @@ def main():
         initial_state = {
             "user_intent": user_intent,
             "gradio_mode": True if not args.hitl else False,
-            "min_chapters": OutlineConfig.min_chapters,
+            "min_chapters": min_chapters,
+            "volume": volume,
+            "master_outline": master_outline,
+            "execution_mode": execution_mode,
+            "evaluation_mode": evaluation_mode,
         }
 
         # 如果选择断点续传，加载检查点状态
@@ -151,6 +202,14 @@ def main():
             initial_state["current_chapter_index"] = checkpoint.get("current_chapter_index", 0)
             initial_state["completed_chapters"] = checkpoint.get("completed_chapters", [])
 
+            # 恢复执行参数（如果 checkpoint 中有的话）
+            if "volume" in checkpoint:
+                initial_state["volume"] = checkpoint["volume"]
+            if "master_outline" in checkpoint:
+                initial_state["master_outline"] = checkpoint["master_outline"]
+            if "execution_mode" in checkpoint:
+                initial_state["execution_mode"] = checkpoint["execution_mode"]
+
         # 创建工作流记录（用于断点保存）
         state_manager.create_workflow_record(CLI_WORKFLOW_ID, user_intent, initial_state)
 
@@ -161,6 +220,19 @@ def main():
 
         # 每次节点执行后保存检查点
         def on_node_complete(node_name, node_state):
+            # 记录节点执行信息
+            chapter_idx = node_state.get("current_chapter_index", 0)
+            elapsed = node_state.get("_node_elapsed", 0)
+
+            # 构建日志信息
+            log_parts = [f"📍 [Node] {node_name}"]
+            if chapter_idx > 0:
+                log_parts.append(f"章节 {chapter_idx + 1}")
+            if elapsed > 0:
+                log_parts.append(f"耗时 {elapsed:.1f}s")
+            logger.info(" | ".join(log_parts))
+
+            # 保存检查点
             node_state["workflow_id"] = CLI_WORKFLOW_ID
             node_state["current_node"] = node_name
             if "novel_storage" in node_state and hasattr(node_state["novel_storage"], "base_dir"):
@@ -169,17 +241,30 @@ def main():
             state_manager.save_state(CLI_WORKFLOW_ID, node_state)
 
         # 使用 stream 迭代执行
+        import time
+        final_state = initial_state
+        node_start_time = time.time()
+
         for step in app.stream(initial_state, {"recursion_limit": OutlineConfig.min_chapters * 50}):
             for node_name, node_state in step.items():
+                # 计算本节点耗时
+                current_time = time.time()
+                if "_node_start" in final_state:
+                    node_state["_node_elapsed"] = current_time - final_state["_node_start"]
+                node_state["_node_start"] = current_time
+
                 on_node_complete(node_name, node_state)
-                # 打印当前进度
+                final_state = node_state
+
+                # 打印当前进度（简洁行）
                 chapter_idx = node_state.get("current_chapter_index", 0)
                 if chapter_idx > 0:
-                    print(f"\r当前进度: 第 {chapter_idx + 1} 章", end="", flush=True)
+                    print(f"\r  ✍️  当前: 第 {chapter_idx + 1} 章 | {node_name}", end="", flush=True)
 
         print()  # 换行
-        logger.info("小说生成流程完成, 准备输出结果")
-        print_save(initial_state)
+        total_time = time.time() - node_start_time
+        logger.info(f"小说生成流程完成 (总耗时 {total_time:.1f}s)")
+        print_save(final_state)
 
         # 清除检查点
         state_manager.clear_checkpoint(CLI_WORKFLOW_ID)

@@ -1,8 +1,26 @@
  
 import yaml
+import os
 from pydantic import BaseModel
 from pathlib import Path
 from typing import Dict, Any, Optional
+
+
+class AgentModelConfig(BaseModel):
+    """Agent 专用模型配置"""
+    supervisor_model: str = "claude-sonnet-4-6"
+    writer_model: str = "claude-sonnet-4-6"
+    specialist_model: str = "claude-haiku-4-5"
+
+    @classmethod
+    def from_env(cls) -> "AgentModelConfig":
+        """从环境变量加载配置"""
+        return cls(
+            supervisor_model=os.getenv("SUPERVISOR_MODEL", "claude-sonnet-4-6"),
+            writer_model=os.getenv("WRITER_MODEL", "claude-sonnet-4-6"),
+            specialist_model=os.getenv("SPECIALIST_MODEL", "claude-haiku-4-5"),
+        )
+
 
 class ModelConfig(BaseModel):
     model_type: str = "api"
@@ -60,3 +78,6 @@ WriterConfig = config.writer_config
 ReflectConfig = config.reflect_config
 
 EntityConfig = config.entity_config
+
+# Agent 模型配置（从环境变量加载）
+AgentModelConfig = AgentModelConfig.from_env()

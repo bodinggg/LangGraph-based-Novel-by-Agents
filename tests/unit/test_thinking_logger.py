@@ -18,10 +18,27 @@ class TestThinkingLogger:
     """Tests for ThinkingLogger class"""
 
     def test_init_creates_log_file(self, tmp_path):
-        """Test that logger creates log file"""
+        """Test that logger initializes without log file (lazy creation)"""
         logger = ThinkingLogger(output_dir=str(tmp_path))
-        assert logger.log_file.endswith('.log')
+        # log_file is None until first log_thinking call (lazy creation)
+        assert logger.log_file is None
         assert tmp_path.exists()
+
+    def test_log_file_created_on_first_log(self, tmp_path):
+        """Test that log file is created on first log_thinking call"""
+        logger = ThinkingLogger(output_dir=str(tmp_path))
+        assert logger.log_file is None
+
+        logger.log_thinking(
+            agent_name="TestAgent",
+            node_name="test_node",
+            prompt_content="Test prompt",
+            response_content="Test response"
+        )
+
+        # Now log_file should be set
+        assert logger.log_file is not None
+        assert logger.log_file.endswith('.log')
 
     def test_log_thinking_writes_to_file(self, tmp_path):
         """Test that log_thinking writes content"""
@@ -166,3 +183,73 @@ class TestLogAgentThinking:
         with open(logger.log_file, 'r', encoding='utf-8') as f:
             content = f.read()
             assert "TestAgent" in content
+
+
+class TestThinkingLoggerNaming:
+    """Tests for log file naming with agent_name and chapter_index"""
+
+    def test_log_file_naming_with_agent_only(self, tmp_path):
+        """Test file naming with agent_name only (no chapter)"""
+        logger = ThinkingLogger(output_dir=str(tmp_path))
+        path = logger._make_log_path("WriterAgent", chapter_index=None)
+        assert "WriterAgent" in path
+        assert "ch" not in path
+
+    def test_log_file_naming_with_chapter(self, tmp_path):
+        """Test file naming with agent_name and chapter_index"""
+        logger = ThinkingLogger(output_dir=str(tmp_path))
+        path = logger._make_log_path("WriterAgent", chapter_index=0)
+        assert "WriterAgent" in path
+        assert "ch01" in path
+
+    def test_log_file_naming_with_novel_title(self, tmp_path):
+        """Test file naming with novel_title"""
+        logger = ThinkingLogger(output_dir=str(tmp_path), novel_title="暗影之刃")
+        path = logger._make_log_path("WriterAgent", chapter_index=0)
+        assert "暗影之刃" in path
+        assert "WriterAgent" in path
+        assert "ch01" in path
+
+    def test_log_file_with_chapter_index_in_content(self, tmp_path):
+        """Test that log content includes chapter info when chapter_index provided"""
+        logger = ThinkingLogger(output_dir=str(tmp_path))
+        logger.log_thinking(
+            agent_name="WriterAgent",
+            node_name="write_chapter",
+            prompt_content="Test prompt",
+            response_content="Test response",
+            chapter_index=2  # 0-indexed, should show "第3章"
+        )
+
+        with open(logger.log_file, 'r', encoding='utf-8') as f:
+            content = f.read()
+            assert "第3章" in content
+            assert "WriterAgent -> write_chapter" in content
+
+    def test_multiple_agents_separate_files(self, tmp_path):
+        """Test that different agents create separate log files"""
+        logger = ThinkingLogger(output_dir=str(tmp_path))
+
+        # First agent
+        logger.log_thinking(
+            agent_name="WriterAgent",
+            node_name="write_chapter",
+            prompt_content="Writer prompt",
+            response_content="Writer response"
+        )
+
+        # Second agent - should create different file
+        logger.log_thinking(
+            agent_name="ConsistencyAgent",
+            node_name="check_consistency",
+            prompt_content="Consistency prompt",
+            response_content="Consistency response",
+            chapter_index=0
+        )
+
+        # Both files should exist
+        assert len(logger._log_files) == 2
+        writer_files = [f for f in logger._log_files.values() if "WriterAgent" in f]
+        consistency_files = [f for f in logger._log_files.values() if "ConsistencyAgent" in f]
+        assert len(writer_files) == 1
+        assert len(consistency_files) == 1
