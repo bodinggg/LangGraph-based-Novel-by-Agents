@@ -20,7 +20,7 @@ class ConsistencyChecker(BaseSubAgent):
     def __init__(self, model_manager=None):
         super().__init__(model_manager, "ConsistencyChecker")
 
-    async def check(self, chapter: str, context: Dict[str, Any]) -> SubAgentReport:
+    async def check(self, chapter: str, context_text: str, chapter_index: int) -> SubAgentReport:
         """
         检查章节内部一致性
 
@@ -28,8 +28,6 @@ class ConsistencyChecker(BaseSubAgent):
         2. 角色行为一致性：检查角色行为是否符合已有设定
         3. 地点一致性：检查角色移动是否合理
         """
-        chapter_index = context.get("chapter_index", 0)
-
         # 构建 LLM 分析用的提示
         system_prompt = """你是一位专业的章节一致性审查专家。请仔细分析给定的小说章节，检查以下方面的一致性问题：
 
@@ -43,17 +41,15 @@ class ConsistencyChecker(BaseSubAgent):
 
 如果没有发现问题，issues 为空数组。"""
 
-        user_prompt = f"""请分析以下小说章节的一致性问题：
+        user_prompt = f"""请分析以下章节的一致性问题：
 
 【章节内容】
 {chapter}
 
 【上下文信息】
-- 章节索引：{chapter_index}
-- 角色弧线数据：{context.get('character_arcs', {})}
-- 世界状态：{context.get('latest_world_state', {})}
+{context_text}
 
-请仔细检查时间线、角色行为和地点的一致性，并给出具体的问题位置和修改建议。"""
+请仔细检查时间线、角色行为和地点的一致性，并给出具体的问题位置和修改建议。输出 JSON 格式。"""
 
         # 调用 LLM 进行分析
         response = await self._call_llm(
