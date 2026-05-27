@@ -18,7 +18,7 @@ class CharacterArcChecker(BaseSubAgent):
     def __init__(self, model_manager=None):
         super().__init__(model_manager, "CharacterArcChecker")
 
-    async def check(self, chapter: str, context: Dict[str, Any]) -> SubAgentReport:
+    async def check(self, chapter: str, context_text: str, chapter_index: int) -> SubAgentReport:
         """
         检查角色弧线是否推进
 
@@ -26,8 +26,6 @@ class CharacterArcChecker(BaseSubAgent):
         2. 检查关键时刻是否发生
         3. 检查关系变化是否合理
         """
-        chapter_index = context.get("chapter_index", 0)
-
         # 构建 LLM 分析用的提示
         system_prompt = """你是一位专业的角色弧线分析专家。请分析小说章节中角色的情感状态变化和行为，判断角色弧线是否按预期推进。
 
@@ -46,13 +44,10 @@ class CharacterArcChecker(BaseSubAgent):
 【章节内容】
 {chapter}
 
-【角色弧线数据】
-{context.get('character_arcs', {})}
+【上下文信息】
+{context_text}
 
-【章节索引】
-{chapter_index}
-
-请判断每个角色的弧线是否应该推进，以及是否在章节中找到了推进的触发条件。"""
+请检查角色情感状态、关键时刻、关系变化，输出 JSON 格式。"""
 
         # 调用 LLM 进行分析
         response = await self._call_llm(
