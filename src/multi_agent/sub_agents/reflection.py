@@ -30,7 +30,7 @@ class ReflectionChecker(BaseSubAgent):
         chapter: str,
         chapter_index: int,
         check_results: List[SubAgentReport],
-        context: Dict[str, Any]
+        context_text: str
     ) -> ReviewResult:
         """
         综合所有 SubAgent 的检查结果，给出最终评估
@@ -39,7 +39,7 @@ class ReflectionChecker(BaseSubAgent):
             chapter: 章节内容
             chapter_index: 章节索引
             check_results: 4 个检查型 SubAgent 的结果
-            context: StoryBible 上下文
+            context_text: StoryBible 格式化后的上下文文本
 
         Returns:
             ReviewResult: 包含质量评分、是否需要修订、具体修改建议
@@ -96,7 +96,7 @@ class ReflectionChecker(BaseSubAgent):
 {agent_results_summary}
 
 【上下文信息】
-{context}
+{context_text}
 
 请综合分析，给出最终的质量评分、是否需要修订、以及具体的修改建议。"""
 
@@ -155,7 +155,7 @@ class ReflectionChecker(BaseSubAgent):
             for report in check_results:
                 all_issues.extend(report.issues)
 
-            suggestions = self._generate_suggestions(chapter, all_issues, context)
+            suggestions = self._generate_suggestions(chapter, all_issues, context_text)
             reasoning += f"; 补充规则检查: 发现 {len(suggestions)} 个建议"
 
         # 如果 LLM 没有给出评分，使用规则计算
@@ -178,7 +178,7 @@ class ReflectionChecker(BaseSubAgent):
         self,
         chapter: str,
         issues: List[Dict[str, Any]],
-        context: Dict[str, Any]
+        context_text: str
     ) -> List[Suggestion]:
         """从问题列表生成具体修改建议"""
         suggestions = []
