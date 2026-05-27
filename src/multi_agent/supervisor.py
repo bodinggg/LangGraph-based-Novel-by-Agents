@@ -92,7 +92,7 @@ class WritingSupervisor:
             ReviewResult: 包含质量评分、是否需要修订、具体修改建议
         """
         start_time = time.time()
-        logger.info(f"[WritingSupervisor] 开始审查第 {chapter_index} 章")
+        logger.info(f"[WritingSupervisor] 开始审查第 {chapter_index+1} 章")
 
         # 确保 thinking_logger 在 ContextVar 中已初始化
         # 这样 SubAgent 的 _call_llm 才能正确记录日志
@@ -102,12 +102,12 @@ class WritingSupervisor:
             logger.info(f"[WritingSupervisor] thinking_logger 已初始化，输出目录: {self.thinking_logger.output_dir}")
 
         # 1. 获取 StoryBible 上下文
-        context = self.storybible.get_context_for_chapter(chapter_index)
+        context_text = self.storybible.format_layered_context(chapter_index)
 
         # 2. 并行执行 4 个检查型 SubAgents
         try:
             check_results = await asyncio.gather(
-                *[agent.check(chapter, context) for agent in self.check_agents],
+                *[agent.check(chapter, context_text, chapter_index) for agent in self.check_agents],
                 return_exceptions=True
             )
 
@@ -135,7 +135,7 @@ class WritingSupervisor:
                 chapter=chapter,
                 chapter_index=chapter_index,
                 check_results=valid_results,
-                context=context
+                context_text=context_text
             )
         except Exception as e:
             logger.error(f"[WritingSupervisor] ReflectionChecker 评估失败: {e}")
@@ -155,7 +155,7 @@ class WritingSupervisor:
 
         elapsed = time.time() - start_time
         logger.info(
-            f"[WritingSupervisor] 第 {chapter_index} 章审查完成: "
+            f"[WritingSupervisor] 第 {chapter_index+1} 章审查完成: "
             f"质量评分={final_result.quality_score:.1f}, "
             f"需要修订={final_result.needs_revision}, "
             f"耗时={elapsed:.1f}s"
