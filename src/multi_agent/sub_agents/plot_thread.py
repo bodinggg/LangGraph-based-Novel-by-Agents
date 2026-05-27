@@ -4,7 +4,6 @@ PlotThreadChecker - 检查伏笔是否回收
 检查章节中之前埋下的伏笔是否被合理回收。
 """
 import logging
-from typing import Dict, Any, List
 
 from src.multi_agent.sub_agents.base import BaseSubAgent
 from src.multi_agent.types import SubAgentReport, CheckCategory
@@ -18,7 +17,7 @@ class PlotThreadChecker(BaseSubAgent):
     def __init__(self, model_manager=None):
         super().__init__(model_manager, "PlotThreadChecker")
 
-    async def check(self, chapter: str, context: Dict[str, Any]) -> SubAgentReport:
+    async def check(self, chapter: str, context_text: str, chapter_index: int) -> SubAgentReport:
         """
         检查伏笔回收情况
 
@@ -26,8 +25,6 @@ class PlotThreadChecker(BaseSubAgent):
         2. 检查新埋下的伏笔是否有预期回收时间
         3. 检查伏笔回收是否合理（不能太突兀）
         """
-        chapter_index = context.get("chapter_index", 0)
-
         # 构建 LLM 分析用的提示
         system_prompt = """你是一位专业的伏笔审查专家。请分析小说章节中的伏笔回收情况。
 
@@ -47,16 +44,10 @@ class PlotThreadChecker(BaseSubAgent):
 【章节内容】
 {chapter}
 
-【未解决的伏笔列表】
-{context.get('unresolved_plot_threads', [])}
+【上下文信息】
+{context_text}
 
-【章节索引】
-{chapter_index}
-
-请判断：
-1. 哪些伏笔在本章被回收了
-2. 哪些伏笔已经逾期未回收
-3. 是否有新伏笔被埋下"""
+请检查伏笔回收、新伏笔埋设、回收合理性，输出 JSON 格式。"""
 
         # 调用 LLM 进行分析
         response = await self._call_llm(
@@ -94,37 +85,6 @@ class PlotThreadChecker(BaseSubAgent):
                     "issue": f"LLM 分析响应解析失败",
                     "suggestion": "请人工检查伏笔状态"
                 })
-
-        # 补充：基于规则的伏笔检查
-        unresolved = context.get("unresolved_plot_threads", [])
-        for thread in unresolved:
-            # 使用 Pydantic 属性访问，不再使用 .get()
-            thread_id = thread.id
-            expected_range = thread.expected_payoff_range or ""
-
-            if expected_range:
-                try:
-                    parts = expected_range.split("-")
-                    if len(parts) == 2:
-                        min_ch = int(parts[0].strip())
-                        max_ch = int(parts[1].strip())
-
-                        if chapter_index > max_ch:
-                            # 逾期未回收的伏笔
-                            overdue = True
-                            for issue in issues:
-                                if issue.get("thread_id") == thread_id:
-                                    overdue = False
-                                    break
-                            if overdue:
-                                issues.append({
-                                    "type": "overdue_plot_thread",
-                                    "thread_id": thread_id,
-                                    "issue": f"伏笔预期在第 {min_ch}-{max_ch} 章回收，但当前已是第 {chapter_index} 章",
-                                    "suggestion": "考虑在本章或下章回收该伏笔"
-                                })
-                except (ValueError, IndexError):
-                    pass
 
         return self._create_report(
             category=CheckCategory.PLOT_THREAD,
