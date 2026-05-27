@@ -18,7 +18,7 @@ class WorldStateChecker(BaseSubAgent):
     def __init__(self, model_manager=None):
         super().__init__(model_manager, "WorldStateChecker")
 
-    async def check(self, chapter: str, context: Dict[str, Any]) -> SubAgentReport:
+    async def check(self, chapter: str, context_text: str, chapter_index: int) -> SubAgentReport:
         """
         检查世界状态一致性
 
@@ -26,8 +26,6 @@ class WorldStateChecker(BaseSubAgent):
         2. 检查时间是否推进合理
         3. 检查势力关系是否正确
         """
-        chapter_index = context.get("chapter_index", 0)
-
         # 构建 LLM 分析用的提示
         system_prompt = """你是一位专业的世界状态审查专家。请分析小说章节中的世界状态（地点、时间、势力关系）是否与之前的记录一致。
 
@@ -46,16 +44,10 @@ class WorldStateChecker(BaseSubAgent):
 【章节内容】
 {chapter}
 
-【当前世界状态】
-{context.get('latest_world_state', {})}
+【上下文信息】
+{context_text}
 
-【历史世界状态】
-{context.get('world_states', [])}
-
-【章节索引】
-{chapter_index}
-
-请仔细检查地点、时间、势力关系是否与之前的记录一致。"""
+请检查地点、时间、势力关系的一致性，输出 JSON 格式。"""
 
         # 调用 LLM 进行分析
         response = await self._call_llm(
