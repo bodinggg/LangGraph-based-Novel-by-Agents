@@ -55,37 +55,26 @@ SAMPLE_CHAPTER = """
 【未完待续】
 """
 
-# 测试上下文 - 使用 Pydantic 对象（与 StoryBible.get_context_for_chapter() 返回格式一致）
-SAMPLE_CONTEXT = {
-    "chapter_index": 1,
-    "character_arcs": {
-        "张伟": {
-            "arc_stages": [
-                {"stage_name": "迷茫", "emotional_state": "困惑"},
-                {"stage_name": "觉醒", "emotional_state": "坚定"},
-                {"stage_name": "成长", "emotional_state": "勇敢"}
-            ],
-            "current_stage_index": 0
-        }
-    },
-    "plot_threads": {},
-    "unresolved_plot_threads": [
-        PlotThread(
-            id="thread_001",
-            name="神秘文件",
-            status="foreshadowed",
-            setup_chapter=1,
-            expected_payoff_range="1-3",
-            foreshadow_keywords=["文件", "保险箱"]
-        )
-    ],
-    "latest_world_state": WorldState(
-        chapter_index=1,
-        location="旧城区废墟",
-        time="新纪元2020年3月15日"
-    ),
-    "world_states": []
-}
+# 测试上下文 - 使用新的 format_layered_context() 格式字符串
+SAMPLE_CONTEXT_TEXT = """## 世界观规则（硬约束）
+- 【严重】角色不能做 X
+- 【警告】世界设定 Y
+
+## 角色状态
+- 张伟：[困惑] | 当前阶段：[迷茫]
+
+## 情节线/伏笔状态
+已解决：
+- 神秘文件（第1章回收）
+进行中：
+- 神秘势力监视
+伏笔：
+- 神秘文件（预期在第2章回收）
+
+## 当前世界状态
+- 地点：旧城区废墟地下室
+- 时间：新纪元2020年3月15日 上午
+- 氛围：紧张
 
 
 class MockModelManager:
@@ -254,8 +243,8 @@ class TestSubAgentLLMCalling:
 
         checker = ConsistencyChecker(mock_model_manager)
 
-        # 执行检查
-        report = await checker.check(SAMPLE_CHAPTER, SAMPLE_CONTEXT)
+        # 执行检查 - 新接口: check(chapter, context_text, chapter_index)
+        report = await checker.check(SAMPLE_CHAPTER, SAMPLE_CONTEXT_TEXT, chapter_index=1)
 
         # 验证调用了 LLM
         assert mock_model_manager.call_count > 0, "应该调用了 LLM"
@@ -292,7 +281,7 @@ class TestSubAgentLLMCalling:
         _logger_var.set(logger)
 
         checker = CharacterArcChecker(mock_model_manager)
-        report = await checker.check(SAMPLE_CHAPTER, SAMPLE_CONTEXT)
+        report = await checker.check(SAMPLE_CHAPTER, SAMPLE_CONTEXT_TEXT, chapter_index=1)
 
         assert mock_model_manager.call_count > 0
         assert isinstance(report, SubAgentReport)
@@ -312,7 +301,7 @@ class TestSubAgentLLMCalling:
         _logger_var.set(logger)
 
         checker = PlotThreadChecker(mock_model_manager)
-        report = await checker.check(SAMPLE_CHAPTER, SAMPLE_CONTEXT)
+        report = await checker.check(SAMPLE_CHAPTER, SAMPLE_CONTEXT_TEXT, chapter_index=1)
 
         assert mock_model_manager.call_count > 0
         assert isinstance(report, SubAgentReport)
@@ -332,7 +321,7 @@ class TestSubAgentLLMCalling:
         _logger_var.set(logger)
 
         checker = WorldStateChecker(mock_model_manager)
-        report = await checker.check(SAMPLE_CHAPTER, SAMPLE_CONTEXT)
+        report = await checker.check(SAMPLE_CHAPTER, SAMPLE_CONTEXT_TEXT, chapter_index=1)
 
         assert mock_model_manager.call_count > 0
         assert isinstance(report, SubAgentReport)
@@ -352,10 +341,10 @@ class TestSubAgentLLMCalling:
         _logger_var.set(logger)
 
         # 先让其他 checker 产生一些结果
-        consistency_report = await ConsistencyChecker(mock_model_manager).check(SAMPLE_CHAPTER, SAMPLE_CONTEXT)
-        char_arc_report = await CharacterArcChecker(mock_model_manager).check(SAMPLE_CHAPTER, SAMPLE_CONTEXT)
-        plot_report = await PlotThreadChecker(mock_model_manager).check(SAMPLE_CHAPTER, SAMPLE_CONTEXT)
-        world_report = await WorldStateChecker(mock_model_manager).check(SAMPLE_CHAPTER, SAMPLE_CONTEXT)
+        consistency_report = await ConsistencyChecker(mock_model_manager).check(SAMPLE_CHAPTER, SAMPLE_CONTEXT_TEXT, chapter_index=1)
+        char_arc_report = await CharacterArcChecker(mock_model_manager).check(SAMPLE_CHAPTER, SAMPLE_CONTEXT_TEXT, chapter_index=1)
+        plot_report = await PlotThreadChecker(mock_model_manager).check(SAMPLE_CHAPTER, SAMPLE_CONTEXT_TEXT, chapter_index=1)
+        world_report = await WorldStateChecker(mock_model_manager).check(SAMPLE_CHAPTER, SAMPLE_CONTEXT_TEXT, chapter_index=1)
 
         # 记录之前的调用次数
         calls_before_reflection = mock_model_manager.call_count
@@ -367,7 +356,7 @@ class TestSubAgentLLMCalling:
             chapter=SAMPLE_CHAPTER,
             chapter_index=1,
             check_results=[consistency_report, char_arc_report, plot_report, world_report],
-            context=SAMPLE_CONTEXT
+            context_text=SAMPLE_CONTEXT_TEXT
         )
 
         # ReflectionChecker 也应该调用 LLM
@@ -400,7 +389,7 @@ class TestThinkingLogContent:
         model_manager = MockModelManager()
         checker = ConsistencyChecker(model_manager)
 
-        await checker.check(SAMPLE_CHAPTER, SAMPLE_CONTEXT)
+        await checker.check(SAMPLE_CHAPTER, SAMPLE_CONTEXT_TEXT, chapter_index=1)
 
         # 读取日志文件
         log_file = logger.log_file
@@ -435,8 +424,8 @@ class TestThinkingLogContent:
         model_manager = MockModelManager()
 
         # 执行多个不同的 checker
-        await ConsistencyChecker(model_manager).check(SAMPLE_CHAPTER, SAMPLE_CONTEXT)
-        await CharacterArcChecker(model_manager).check(SAMPLE_CHAPTER, SAMPLE_CONTEXT)
+        await ConsistencyChecker(model_manager).check(SAMPLE_CHAPTER, SAMPLE_CONTEXT_TEXT, chapter_index=1)
+        await CharacterArcChecker(model_manager).check(SAMPLE_CHAPTER, SAMPLE_CONTEXT_TEXT, chapter_index=1)
 
         # 验证创建了多个日志文件
         assert len(logger._log_files) >= 2, f"应该至少有 2 个日志文件，实际有 {len(logger._log_files)}"
@@ -473,7 +462,7 @@ class TestLLMAnalysisQuality:
         model_manager = MockModelManager()
         checker = ConsistencyChecker(model_manager)
 
-        report = await checker.check(SAMPLE_CHAPTER, SAMPLE_CONTEXT)
+        report = await checker.check(SAMPLE_CHAPTER, SAMPLE_CONTEXT_TEXT, chapter_index=1)
 
         # 验证报告结构
         assert hasattr(report, 'category')
@@ -506,7 +495,7 @@ class TestLLMAnalysisQuality:
         model_manager = MockModelManager()
         checker = ConsistencyChecker(model_manager)
 
-        report = await checker.check(SAMPLE_CHAPTER, SAMPLE_CONTEXT)
+        report = await checker.check(SAMPLE_CHAPTER, SAMPLE_CONTEXT_TEXT, chapter_index=1)
 
         # LLM 应该能够理解中文并给出合理的分析
         # 这里我们用 mock，返回值应该包含中文
@@ -559,7 +548,7 @@ class TestPydanticModelHandling:
         checker = PlotThreadChecker(mock_model_manager)
 
         # This should NOT raise "'PlotThread' object has no attribute 'get'"
-        report = await checker.check(SAMPLE_CHAPTER, pydantic_context)
+        report = await checker.check(SAMPLE_CHAPTER, SAMPLE_CONTEXT_TEXT, chapter_index=1)
 
         assert isinstance(report, SubAgentReport)
         assert report.agent_name == "PlotThreadChecker"
@@ -605,7 +594,7 @@ class TestPydanticModelHandling:
         checker = ConsistencyChecker(mock_model_manager)
 
         # This should NOT raise an error
-        report = await checker.check(SAMPLE_CHAPTER, pydantic_context)
+        report = await checker.check(SAMPLE_CHAPTER, SAMPLE_CONTEXT_TEXT, chapter_index=1)
 
         assert isinstance(report, SubAgentReport)
 
@@ -647,7 +636,7 @@ class TestPydanticModelHandling:
         checker = WorldStateChecker(mock_model_manager)
 
         # This should NOT raise an error
-        report = await checker.check(SAMPLE_CHAPTER, pydantic_context)
+        report = await checker.check(SAMPLE_CHAPTER, SAMPLE_CONTEXT_TEXT, chapter_index=1)
 
         assert isinstance(report, SubAgentReport)
 

@@ -23,15 +23,15 @@ class TestCheckRevisionNodeEdgeCases:
     """Tests for check_revision_node edge cases"""
 
     def test_supervisor_result_is_none(self):
-        """When supervisor_result is None, should return write_next"""
+        """When supervisor_result is None, should return accept_chapter"""
         from src.supervisor_node import check_revision_node
 
         state = make_state(supervisor_result=None, revision_needed=False)
         result = check_revision_node(state)
-        assert result == "write_next"
+        assert result == "accept_chapter"
 
     def test_supervisor_result_is_dict_no_revision_needed(self):
-        """When supervisor_result is dict and revision_needed=False, should return write_next"""
+        """When supervisor_result is dict and revision_needed=False, should return accept_chapter"""
         from src.supervisor_node import check_revision_node
 
         state = make_state(
@@ -39,7 +39,7 @@ class TestCheckRevisionNodeEdgeCases:
             revision_needed=False
         )
         result = check_revision_node(state)
-        assert result == "write_next"
+        assert result == "accept_chapter"
 
     def test_supervisor_result_is_dict_revision_needed(self):
         """When supervisor_result is dict and revision_needed=True, should return revise"""
@@ -64,7 +64,7 @@ class TestCheckRevisionNodeEdgeCases:
         try:
             result = check_revision_node(state)
             # If it returns something reasonable, that's fine
-            assert result in ["write_next", "revise"]
+            assert result in ["accept_chapter", "revise"]
         except AttributeError as e:
             if "'str' object has no attribute 'get'" in str(e):
                 pytest.fail(f"check_revision_node crashed with: {e}")
