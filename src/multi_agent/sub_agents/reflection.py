@@ -108,11 +108,12 @@ class ReflectionChecker(BaseSubAgent):
             require_json=True
         )
 
-        # 解析 LLM 响应
-        quality_score = 7.0
-        needs_revision = False
+        # 解析 LLM 响应 - 使用 None 作为哨兵值，避免与有效评分混淆
+        quality_score = None  # None 表示 LLM 未提供评分
+        needs_revision = False  # 默认不需要修订
         suggestions = []
         reasoning = "LLM 综合评估完成"
+        llm_parsing_failed = False  # 跟踪 LLM 是否解析成功
 
         try:
             import json as json_module
@@ -124,8 +125,11 @@ class ReflectionChecker(BaseSubAgent):
             response_clean = response_clean.strip()
 
             parsed = json_module.loads(response_clean)
-            quality_score = parsed.get("quality_score", 7.0)
-            needs_revision = parsed.get("needs_revision", False)
+            quality_score = parsed.get("quality_score", None)
+            # 优先信任 LLM 返回的 needs_revision 决策
+            llm_provided_revision = parsed.get("needs_revision")
+            if llm_provided_revision is not None:
+                needs_revision = bool(llm_provided_revision)
             suggestions_raw = parsed.get("suggestions", [])
 
             # 转换 suggestions 格式
@@ -146,6 +150,7 @@ class ReflectionChecker(BaseSubAgent):
             reasoning = parsed.get("reasoning", "LLM 综合评估完成")
         except Exception as e:
             logger.warning(f"LLM 响应解析失败: {e}")
+            llm_parsing_failed = True
             # 回退到基于规则的方法
             reasoning = f"LLM 解析失败，使用规则评估: {response[:100]}"
 
@@ -158,10 +163,17 @@ class ReflectionChecker(BaseSubAgent):
             suggestions = self._generate_suggestions(chapter, all_issues, context_text)
             reasoning += f"; 补充规则检查: 发现 {len(suggestions)} 个建议"
 
-        # 如果 LLM 没有给出评分，使用规则计算
-        if quality_score == 7.0:
-            quality_score = self._calculate_quality_score(chapter, [], suggestions)
+        # 只有当 LLM 完全解析失败时，才用规则计算 needs_revision
+        # 否则信任 LLM 的决策（已在前面的 parsed.get("needs_revision") 中设置）
+        if llm_parsing_failed:
+            # LLM 完全失败，规则兜底
+            if quality_score is None:
+                quality_score = self._calculate_quality_score(chapter, [], suggestions)
             needs_revision = len(suggestions) > 0 or quality_score < 7.0
+        elif quality_score is None:
+            # LLM 成功解析但没提供评分，只计算评分供参考
+            quality_score = self._calculate_quality_score(chapter, [], suggestions)
+            # 不覆盖 needs_revision，因为 LLM 已经提供了决策
 
         execution_time = time.time() - start_time
 
