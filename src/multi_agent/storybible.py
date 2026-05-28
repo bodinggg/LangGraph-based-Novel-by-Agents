@@ -204,15 +204,109 @@ class StoryBible:
     # ==================== 上下文获取 ====================
 
     def get_context_for_chapter(self, chapter_index: int) -> Dict[str, Any]:
-        """获取章节写作所需的上下文"""
+        """分层注入：按变化频率分三层获取章节写作上下文
+
+        Layer 0: 静态约束（整部小说不变，永久缓存）
+            - WorldRule（硬规则：角色不能做 X）
+            - 世界观设定
+
+        Layer 1: 慢变状态（章节间偶尔变化）
+            - CharacterArc 当前阶段
+            - 已解决的 PlotThread（归档）
+
+        Layer 2: 快变状态（每章必变）
+            - 当前 WorldState（地点、时间）
+            - 活跃 PlotThread 状态
+            - 本章具体约束
+
+        利用 LLM 的 Primacy Bias，把最重要的硬约束放在 Layer 0，
+        既缓存友好，又注意力友好。
+
+        Args:
+            chapter_index: 章节索引（0-based）
+
+        Returns:
+            Dict: 分层上下文，包含 layer0/layer1/layer2
+        """
         return {
-            "character_arcs": self._character_arcs,
-            "plot_threads": self._plot_threads,
-            "latest_world_state": self.get_latest_world_state(),
-            "world_states": self._world_states,
-            "unresolved_plot_threads": self.get_unresolved_plot_threads(),
-            "chapter_index": chapter_index
+            "layer0": {
+                "world_rules": self._world_rules.copy(),
+            },
+            "layer1": {
+                "character_arcs": self._character_arcs.copy(),
+                "resolved_threads": [t for t in self._plot_threads.values() if t.is_resolved()],
+            },
+            "layer2": {
+                "world_state": self.get_latest_world_state(),
+                "active_threads": self.get_active_plot_threads(),
+                "unresolved_threads": self.get_unresolved_plot_threads(),
+                "chapter_index": chapter_index,
+            },
         }
+
+    def format_layered_context(self, chapter_index: int) -> str:
+        """将分层上下文格式化为可注入 prompt 的文本
+
+        Args:
+            chapter_index: 章节索引（0-based）
+
+        Returns:
+            格式化的文本，可直接注入到 WriterAgent 的 prompt 中
+        """
+        ctx = self.get_context_for_chapter(chapter_index)
+        lines = []
+
+        # Layer 0: 静态约束（最重要，放在最前面）
+        lines.append("## 世界观规则（硬约束）")
+        if ctx["layer0"]["world_rules"]:
+            for rule in ctx["layer0"]["world_rules"]:
+                severity_marker = "【严重】" if rule.severity == "error" else "【警告】"
+                lines.append(f"- {severity_marker}{rule.description}")
+        else:
+            lines.append("- 无")
+        lines.append("")
+
+        # Layer 1: 慢变状态
+        lines.append("## 角色状态")
+        if ctx["layer1"]["character_arcs"]:
+            for name, arc in ctx["layer1"]["character_arcs"].items():
+                stage = arc.get_current_stage()
+                stage_info = f"当前阶段：{stage.stage_name}" if stage else "无阶段信息"
+                lines.append(f"- {name}：{arc.emotional_state} | {stage_info}")
+        else:
+            lines.append("- 无")
+
+        lines.append("")
+        lines.append("## 情节线/伏笔状态")
+        if ctx["layer1"]["resolved_threads"]:
+            lines.append("已解决：")
+            for t in ctx["layer1"]["resolved_threads"]:
+                lines.append(f"- [已回收] {t.name}")
+        if ctx["layer2"]["active_threads"]:
+            lines.append("进行中：")
+            for t in ctx["layer2"]["active_threads"]:
+                lines.append(f"- [进行] {t.name}")
+        if ctx["layer2"]["unresolved_threads"]:
+            lines.append("伏笔：")
+            for t in ctx["layer2"]["unresolved_threads"]:
+                lines.append(f"- [伏笔] {t.name}（预期在第{t.expected_payoff_range}章回收）")
+        if not ctx["layer1"]["resolved_threads"] and not ctx["layer2"]["active_threads"] and not ctx["layer2"]["unresolved_threads"]:
+            lines.append("- 无")
+        lines.append("")
+
+        # Layer 2: 快变状态
+        lines.append("## 当前世界状态")
+        ws = ctx["layer2"]["world_state"]
+        if ws:
+            lines.append(f"- 地点：{ws.location}")
+            lines.append(f"- 时间：{ws.time}")
+            lines.append(f"- 氛围：{ws.mood}")
+            if ws.description:
+                lines.append(f"- 描述：{ws.description}")
+        else:
+            lines.append("- 无")
+
+        return "\n".join(lines)
 
     # ==================== 更新机制 ====================
 

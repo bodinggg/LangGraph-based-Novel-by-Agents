@@ -527,6 +527,22 @@ def write_chapter_node(state: NovelState, writer_agent: WriterAgent) -> NovelSta
             "count": 1,
         }
 
+    # 注入 StoryBible 上下文（分层注入：让 WriterAgent 知道当前角色状态和世界状态）
+    if state.novel_storage:
+        try:
+            from src.supervisor_node import _storybible
+            if _storybible:
+                chapter_idx = state.current_chapter_index
+                state._story_bible_data = {
+                    'character_arcs': list(_storybible._character_arcs.values()),
+                    'plot_threads': list(_storybible._plot_threads.values()),
+                    'world_states': _storybible._world_states,
+                    'layered_context': _storybible.format_layered_context(chapter_idx),
+                }
+                logger.debug(f"📖 [WriteChapter] StoryBible 分层上下文已注入（第{chapter_idx}章）")
+        except Exception as e:
+            logger.debug(f"📖 [WriteChapter] StoryBible 注入失败（正常如果未初始化）: {e}")
+
     outline = state.novel_storage.load_outline()
 
     # 获取当前章节大纲

@@ -15,6 +15,11 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from src.api.routes import router
 from src.core.workflow_service import get_workflow_service
+from src.log_config import setup_logging, loggers
+
+# 初始化日志系统（统一配置）
+setup_logging()
+logger = loggers['api']
 
 
 @asynccontextmanager
@@ -22,7 +27,7 @@ async def lifespan(app: FastAPI):
     """应用生命周期管理"""
     # 启动时初始化服务
     _ = get_workflow_service()
-    print("✅ AI Novel Generator API 已启动")
+    logger.info("✅ AI Novel Generator API 已启动")
     yield
     # 关闭时清理
 
@@ -69,9 +74,9 @@ def main():
     host = os.getenv("API_HOST", "127.0.0.1")
     port = int(os.getenv("API_PORT", "8001"))
 
-    print(f"🚀 启动 API 服务: http://{host}:{port}")
-    print(f"📚 API 文档: http://{host}:{port}/docs")
-    print(f"📊 WebSocket: ws://{host}:{port}/api/v1/novels/{{workflow_id}}/ws")
+    logger.info(f"🚀 启动 API 服务: http://{host}:{port}")
+    logger.info(f"📚 API 文档: http://{host}:{port}/docs")
+    logger.info(f"📊 WebSocket: ws://{host}:{port}/api/v1/novels/{{workflow_id}}/ws")
 
     uvicorn.run(
         "app_api:app",

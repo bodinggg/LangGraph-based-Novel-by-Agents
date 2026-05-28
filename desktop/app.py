@@ -15,6 +15,11 @@ load_dotenv(override=True)
 # 添加项目根目录到 path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# 初始化日志系统（统一配置）
+from src.log_config import setup_logging, loggers
+setup_logging()
+logger = loggers['gradio']  # Desktop uses Gradio UI
+
 
 def get_free_port():
     """获取一个可用端口"""
@@ -62,7 +67,7 @@ def start_api_server(port, app):
 
 def main():
     port = get_free_port()
-    print(f"Starting server on port {port}...")
+    logger.info(f"Starting server on port {port}...")
 
     # 创建并启动 API 服务器（包含 Gradio UI）
     app = create_app()
@@ -73,8 +78,8 @@ def main():
     import time
     time.sleep(2)
 
-    print(f"Server started, opening window...")
-    print(f"UI available at: http://127.0.0.1:{port}/ui")
+    logger.info(f"Server started, opening window...")
+    logger.info(f"UI available at: http://127.0.0.1:{port}/ui")
 
     # 创建 pywebview 窗口，加载 /ui 路径（Gradio UI）
     window = webview.create_window(
@@ -90,7 +95,7 @@ def main():
     # 启动窗口
     webview.start(debug=False)
 
-    print("Application closed.")
+    logger.info("Application closed.")
 
 
 if __name__ == '__main__':

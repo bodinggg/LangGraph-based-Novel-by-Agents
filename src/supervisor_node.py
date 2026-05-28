@@ -65,7 +65,7 @@ def supervisor_node(state: NovelState) -> Dict[str, Any]:
     chapter_content = state.raw_current_chapter
 
     if not chapter_content:
-        logger.info(f"📖 [SupervisorNode] 章节 {current_index} 无内容，跳过")
+        logger.info(f"📖 [SupervisorNode] 章节 {current_index+1} 无内容，跳过")
         return {
             "supervisor_result": None,
             "revision_needed": False,
@@ -73,7 +73,7 @@ def supervisor_node(state: NovelState) -> Dict[str, Any]:
             "revision_notes": ""
         }
 
-    logger.info(f"📖 [SupervisorNode] 开始审查第 {current_index} 章")
+    logger.info(f"📖 [SupervisorNode] 开始审查第 {current_index+1} 章")
 
     # 1. 从存储加载 StoryBible 或从大纲初始化
     if state.novel_storage:
@@ -172,7 +172,7 @@ def supervisor_node(state: NovelState) -> Dict[str, Any]:
         revision_notes = review_result.reasoning or "无需修订"
 
     logger.info(
-        f"📖 [SupervisorNode] 第 {current_index} 章审查完成: "
+        f"📖 [SupervisorNode] 第 {current_index+1} 章审查完成: "
         f"质量评分={review_result.quality_score:.1f}, "
         f"需要修订={needs_revision}, "
         f"建议数={len(review_result.suggestions)}"

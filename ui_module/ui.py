@@ -969,7 +969,7 @@ class NovelGeneratorUI:
             # 如果解析失败，返回原始章节
             return self.all_chapters[index]
     
-    def _generate_novel_interactive(self, user_intent, model_type, api_key, base_url, api_type, model_name, model_path, min_chapters, volume, master_outline, execution_mode,
+    def _generate_novel_interactive(self, user_intent, model_type, api_key, base_url, api_type, model_name, model_path, min_chapters, volume, master_outline, execution_mode, evaluation_mode,
                       status_box, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector, approve_btn, reject_btn):
         """交互式生成小说的主流程（分步执行，需要用户批准）"""
         if self.processing:
@@ -1024,7 +1024,7 @@ class NovelGeneratorUI:
             
             # 创建工作流迭代器
             self.workflow_iterator = self.workflow.stream(
-                {"user_intent": user_intent, "gradio_mode": True, "execution_mode": execution_mode},  # 设置为True以启用交互模式
+                {"user_intent": user_intent, "gradio_mode": True, "execution_mode": execution_mode, "evaluation_mode": evaluation_mode},  # 设置为True以启用交互模式
                 {"recursion_limit": 1000000}
             )
             
@@ -1101,7 +1101,7 @@ class NovelGeneratorUI:
             self.processing = False
             self.workflow_iterator = None
 
-    def _generate_novel(self, user_intent, model_type, api_key, base_url, api_type, model_name, model_path, min_chapters, volume, master_outline, execution_mode,
+    def _generate_novel(self, user_intent, model_type, api_key, base_url, api_type, model_name, model_path, min_chapters, volume, master_outline, execution_mode, evaluation_mode,
                       status_box, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector):
         """生成小说的主流程（生成器函数）- 保持原有的自动执行模式"""
         if self.processing:
@@ -1152,11 +1152,19 @@ class NovelGeneratorUI:
 
             final_state = None
             for step in self.workflow.stream(
-                {"user_intent": user_intent, "gradio_mode":True, "execution_mode": execution_mode},
+                {"user_intent": user_intent, "gradio_mode":True, "execution_mode": execution_mode, "evaluation_mode": evaluation_mode},
                 {"recursion_limit": 1000000}
             ):
                 for node, state_dict in step.items():
                     self.current_state = state_dict
+                    # 防御性检查：确保 state_dict 是 dict 类型
+                    if not isinstance(state_dict, dict):
+                        logger.warning(f"[UI] node={node} 返回非dict类型: {type(state_dict)}, 跳过")
+                        error_msg = f"节点 {node} 返回格式错误: {type(state_dict).__name__}"
+                        yield error_msg, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector
+                        final_state = None  # 重置，避免后续访问失败
+                        continue
+
                     final_state = state_dict
                     status = self.__update_status(f"🔍 执行节点: {node}")
 
@@ -1196,7 +1204,7 @@ class NovelGeneratorUI:
                         self.last_chapter_index = current_index
                     if state_dict and state_dict.get('validated_evaluation'):
                         evaluation_box = self._format_evaluation(state_dict['validated_evaluation'])
-                    
+
                     yield status, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector
             
             self.final_result = final_state.get('result', '') if final_state and hasattr(final_state, 'get') else ''
@@ -1214,10 +1222,10 @@ class NovelGeneratorUI:
                     if self.all_chapters:
                         chapter_box = self._format_chapter(self.all_chapters[0], 0)
                 yield status, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector
-                
+
         except Exception as e:
             error_msg = f"❌ 小说生成失败：{str(e)}"
-            logger.error(error_msg)
+            logger.error(f"UI exception in stream loop: {error_msg}", exc_info=True)
             yield error_msg, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector
         finally:
             self.processing = False
@@ -1575,6 +1583,13 @@ class NovelGeneratorUI:
                         info="serial: 串行撰写（稳定）| parallel: 并行撰写（需要多API Key）"
                     )
 
+                    evaluation_mode = gr.Radio(
+                        choices=["deep", "fast"],
+                        value="deep",
+                        label="评估模式",
+                        info="deep: 完整检查（5个Specialists + Council协商）| fast: 快速评估"
+                    )
+
                 # 右侧内容展示区（占3份宽度）
                 with gr.Column(scale=2):
                     with gr.Tabs(elem_classes="info-card"):
@@ -1705,7 +1720,7 @@ class NovelGeneratorUI:
             generate_btn.click(
                 fn=self._generate_novel,
                 inputs=[
-                    user_intent, model_type, api_key, base_url, api_type, model_name, model_path, min_chapters, volume, master_outline, execution_mode,
+                    user_intent, model_type, api_key, base_url, api_type, model_name, model_path, min_chapters, volume, master_outline, execution_mode, evaluation_mode,
                     status_box, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector
                 ],
                 outputs=[status_box, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector]
@@ -1715,7 +1730,7 @@ class NovelGeneratorUI:
             interactive_btn.click(
                 fn=self._generate_novel_interactive,
                 inputs=[
-                    user_intent, model_type, api_key, base_url, api_type, model_name, model_path, min_chapters, volume, master_outline, execution_mode,
+                    user_intent, model_type, api_key, base_url, api_type, model_name, model_path, min_chapters, volume, master_outline, execution_mode, evaluation_mode,
                     status_box, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector, approve_btn, reject_btn
                 ],
                 outputs=[status_box, outline_box, characters_box, chapter_box, evaluation_box, chapter_selector, approval_buttons, approval_buttons]

@@ -341,5 +341,6 @@ def create_workflow(model_config: ModelConfig, Agent_config: BaseConfig= None, e
     workflow.add_edge("success", END)
     workflow.add_edge("failure", END)
     logger.info("工作流图创建完成, 开始编译!")
+
     # 编译图
     return workflow.compile()

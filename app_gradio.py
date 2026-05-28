@@ -7,7 +7,6 @@ FastAPI + Gradio 统一入口
 - /api/v1/* -> REST API
 """
 import os
-import logging
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 
@@ -19,8 +18,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from gradio import mount_gradio_app
 
 from ui_module.ui import NovelGeneratorUI
+from src.log_config import setup_logging, loggers
 
-logger = logging.getLogger(__name__)
+# 初始化日志系统（统一配置）
+setup_logging()
+logger = loggers['gradio']
 
 
 @asynccontextmanager

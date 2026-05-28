@@ -537,11 +537,24 @@ class WriterAgent(BaseAgent):
         }
 
         # Phase 2: 添加 StoryBible 上下文（角色弧线、情节线、世界状态）
+        # 使用分层注入格式（Layer 0: 硬约束, Layer 1: 慢变状态, Layer 2: 快变状态）
         story_bible_data = getattr(state, '_story_bible_data', None)
         if story_bible_data:
-            params['character_arcs'] = self._format_character_arcs(story_bible_data.get('character_arcs', []))
-            params['active_plot_threads'] = self._format_plot_threads(story_bible_data.get('plot_threads', []))
-            params['world_state'] = self._format_world_state(story_bible_data.get('world_states', []))
+            if 'layered_context' in story_bible_data:
+                # 分层格式：设置 storybible_context，同时填充模板需要的三个字段
+                params['storybible_context'] = story_bible_data['layered_context']
+                # 从 character_arcs 列表中提取角色名和状态（兼容旧格式）
+                character_arcs_list = story_bible_data.get('character_arcs', [])
+                params['character_arcs'] = self._format_character_arcs(character_arcs_list)
+                plot_threads_list = story_bible_data.get('plot_threads', [])
+                params['active_plot_threads'] = self._format_plot_threads(plot_threads_list)
+                world_states_list = story_bible_data.get('world_states', [])
+                params['world_state'] = self._format_world_state(world_states_list)
+            else:
+                # Fallback 到旧格式（保持向后兼容）
+                params['character_arcs'] = self._format_character_arcs(story_bible_data.get('character_arcs', []))
+                params['active_plot_threads'] = self._format_plot_threads(story_bible_data.get('plot_threads', []))
+                params['world_state'] = self._format_world_state(story_bible_data.get('world_states', []))
         else:
             params['character_arcs'] = "无"
             params['active_plot_threads'] = "无"

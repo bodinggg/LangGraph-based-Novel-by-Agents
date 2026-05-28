@@ -2,7 +2,7 @@
 定义创作流程的状态，便于管理
 """
 
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from src.model import *
 from src.storage import NovelStorage
 from pydantic import BaseModel, ConfigDict
@@ -79,6 +79,9 @@ class NovelState(BaseModel):
     revision_context: Optional[dict] = None  # {chapter_index, revision_requests, count}
     supervisor_recheck_count: int = 0  # 追踪修订循环次数
     max_revision_loops: int = 3  # 最多允许3轮修订
+
+    # StoryBible 上下文数据（分层注入）
+    _story_bible_data: Optional[Dict[str, Any]] = None
 
     # CouncilNode 相关字段
     council_decision: Optional[dict] = None
