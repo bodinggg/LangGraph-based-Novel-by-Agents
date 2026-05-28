@@ -5,5 +5,11 @@ transformers
 nvitop
 gradio
 openai
-dotenv
-
+anthropic
+pydantic
+fastapi
+uvicorn
+python-dotenv
+pyyaml
+pytest
+pytest-asyncio
